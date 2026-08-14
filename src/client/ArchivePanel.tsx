@@ -8,17 +8,34 @@
  *  - stores.connection.api.sessions.history：按页读取会话事件（冷会话走
  *    持久化检查，无需激活 Agent）
  *  - GET /api/session.export：宿主侧 ZIP 导出（与官方"下载会话日志"同一端点）
+ *
+ * 交互能力（v0.2）：
+ *  - 关键词搜索：即时匹配标题/ID/工作区；可选「内容」模式逐页扫描每段会话
+ *    最近的对话（deepSearch，页数可在设置调整）
+ *  - 排序：最近更新 / 名称 / 会话 ID，升序/降序
+ *  - 排列：列表（竖列）/ 网格（横排），网格下展开的行横跨整行
+ *  - 介绍文本可关闭（settings.showNote，持久化）
+ *  - 全量 UI 走 zh/en 双语（i18n.ts），语言偏好可在设置里覆盖
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type {
   ArchiveStores, ConnectionHandle, HistoryEntry, SessionEvent, SessionId,
 } from './types.ts'
+import { makeT, resolveLang, type TFunc } from './i18n.ts'
+import { useSettings } from './settings.ts'
+import { SettingsPanel } from './SettingsPanel.tsx'
 
 /** 历史一页的消息数（chunk/tool 事件随消息成组返回，20 条消息已是一大页）。 */
 const PAGE_SIZE = 20
 
 /** 侧边栏行内只渲染这两类事件（其余如 turn/start、tool/call 等跳过）。 */
 const CHAT_TYPES = new Set(['user/message', 'assistant/message'])
+
+/* ── 工具栏图标（与 shell 16px 导航图标观感一致） ── */
+const SEARCH_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>`
+const LIST_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><path d="M3 4h10M3 8h10M3 12h10"/></svg>`
+const GRID_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><rect x="3" y="3" width="4" height="4" rx="1"/><rect x="9" y="3" width="4" height="4" rx="1"/><rect x="3" y="9" width="4" height="4" rx="1"/><rect x="9" y="9" width="4" height="4" rx="1"/></svg>`
+const GEAR_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.8v2M8 12.2v2M1.8 8h2M12.2 8h2M3.6 3.6l1.4 1.4M11 11l1.4 1.4M12.4 3.6 11 5M5 11l-1.4 1.4"/></svg>`
 
 /** store 适配器：useSyncExternalStore 直接消费 SnapshotStore。 */
 function subscribeOf<T>(store: { subscribe(listener: () => void): () => void }): (listener: () => void) => () => void {
@@ -203,6 +220,127 @@ function useSessionLog(
   return { events, hasMore, loading, error, loadOlder }
 }
 
+/** 从尾部向前扫描一段会话的对话，返回关键词命中条数（读失败按 0 计）。 */
+async function scanSessionContent(
+  connection: ConnectionHandle,
+  sessionId: SessionId,
+  keyword: string,
+  maxPages: number,
+): Promise<number> {
+  let matches = 0
+  let beforeSeq: number | undefined
+  for (let page = 0; page < maxPages; page += 1) {
+    try {
+      const response = await connection.api.sessions.history({
+        sessionId,
+        ...(beforeSeq === undefined ? {} : { beforeSeq }),
+        maxMessages: PAGE_SIZE,
+      })
+      if (!response.result.ok) break
+      const events = response.result.value?.events ?? []
+      if (events.length === 0) break
+      for (const entry of events) {
+        const event = entry.event
+        if (!CHAT_TYPES.has(event.type)) continue
+        if (textOf(event).toLowerCase().includes(keyword)) matches += 1
+      }
+      if (!(response.result.value?.hasMore ?? false)) break
+      const first = events[0]?.event
+      if (first === undefined) break
+      beforeSeq = first.seq
+    } catch {
+      break
+    }
+  }
+  return matches
+}
+
+interface ContentSearchState {
+  /** 会话 id → 命中条数（只有已扫描的会话才有条目）。 */
+  matches: ReadonlyMap<SessionId, number>
+  /** 是否正在扫描。 */
+  scanning: boolean
+  /** 已扫描会话数。 */
+  done: number
+  /** 待扫描会话总数。 */
+  total: number
+  /** connection 不可用（深度搜索不可执行）。 */
+  unavailable: boolean
+}
+
+/**
+ * 对话内容搜索：开启时按会话逐个从尾部向前扫描（最多 maxPages 页），
+ * 命中结果逐条增量发布；关键词变化/扫描页数变化会作废缓存并重新扫描。
+ */
+function useContentSearch(
+  connection: ConnectionHandle | undefined,
+  sessionIds: readonly SessionId[],
+  keyword: string,
+  enabled: boolean,
+  maxPages: number,
+): ContentSearchState {
+  const [matches, setMatches] = useState<ReadonlyMap<SessionId, number>>(new Map())
+  const [scanning, setScanning] = useState(false)
+  const [progress, setProgress] = useState<{ done: number; total: number }>({ done: 0, total: 0 })
+  const [unavailable, setUnavailable] = useState(false)
+  const tokenRef = useRef(0)
+  const cacheRef = useRef(new Map<SessionId, number>())
+
+  // 关键词变化 → 旧缓存作废（清空后扫描循环会全部重扫）。
+  useEffect(() => {
+    cacheRef.current.clear()
+  }, [keyword])
+  // 扫描深度变化 → 同样作废。
+  useEffect(() => {
+    cacheRef.current.clear()
+  }, [maxPages])
+
+  useEffect(() => {
+    const token = ++tokenRef.current
+    const kw = keyword.trim().toLowerCase()
+    if (kw === '' || !enabled) {
+      cacheRef.current.clear()
+      setMatches(new Map())
+      setScanning(false)
+      setProgress({ done: 0, total: 0 })
+      setUnavailable(false)
+      return
+    }
+    if (connection === undefined) {
+      setMatches(new Map())
+      setScanning(false)
+      setProgress({ done: 0, total: 0 })
+      setUnavailable(true)
+      return
+    }
+    const todo = sessionIds.filter((id) => !cacheRef.current.has(id))
+    if (todo.length === 0) {
+      setMatches(new Map(cacheRef.current))
+      setScanning(false)
+      setUnavailable(false)
+      return
+    }
+    setUnavailable(false)
+    setScanning(true)
+    setProgress({ done: 0, total: todo.length })
+    void (async () => {
+      let done = 0
+      for (const id of todo) {
+        if (tokenRef.current !== token) return
+        const count = await scanSessionContent(connection, id, kw, maxPages)
+        if (tokenRef.current !== token) return
+        cacheRef.current.set(id, count)
+        done += 1
+        setMatches(new Map(cacheRef.current))
+        setProgress({ done, total: todo.length })
+      }
+      if (tokenRef.current === token) setScanning(false)
+    })()
+  }, [connection, sessionIds, keyword, enabled, maxPages])
+
+  return { matches, scanning, done: progress.done, total: progress.total, unavailable }
+}
+
 /** 一行归档会话。 */
 function ArchiveRow(props: {
   connection: ConnectionHandle | undefined
@@ -210,11 +348,13 @@ function ArchiveRow(props: {
   title: string
   meta: string
   workspace: string | undefined
+  open: boolean
+  onToggleOpen(): void
   onNotice(sessionId: SessionId, text: string, kind?: 'error'): void
   onUnarchive(sessionId: SessionId): Promise<void>
+  t: TFunc
 }): JSX.Element {
-  const { connection, sessionId, title, meta, workspace, onNotice, onUnarchive } = props
-  const [open, setOpen] = useState(false)
+  const { connection, sessionId, title, meta, workspace, open, onToggleOpen, onNotice, onUnarchive, t } = props
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const log = useSessionLog(connection, sessionId, open)
 
@@ -223,19 +363,19 @@ function ArchiveRow(props: {
     try {
       if (kind === 'download') {
         await downloadLogZip(sessionId)
-        onNotice(sessionId, '已开始下载日志 ZIP')
+        onNotice(sessionId, t('downloadStarted'))
       } else if (kind === 'copy') {
         await copySessionId(sessionId)
-        onNotice(sessionId, '会话 ID 已复制')
+        onNotice(sessionId, t('idCopied'))
       } else {
         await onUnarchive(sessionId)
       }
     } catch (cause) {
-      onNotice(sessionId, `操作失败：${cause instanceof Error ? cause.message : String(cause)}`, 'error')
+      onNotice(sessionId, t('actionFailed', { msg: cause instanceof Error ? cause.message : String(cause) }), 'error')
     } finally {
       setBusyAction(null)
     }
-  }, [sessionId, onNotice, onUnarchive])
+  }, [sessionId, onNotice, onUnarchive, t])
 
   return (
     <div className="dsh-av-row">
@@ -245,29 +385,29 @@ function ArchiveRow(props: {
         <span className="dsh-av-row-meta">{meta}</span>
       </div>
       <div className="dsh-av-actions">
-        <button type="button" className="dsh-av-btn" onClick={() => setOpen(v => !v)}>
-          {open ? '收起对话' : '查看对话'}
+        <button type="button" className="dsh-av-btn" onClick={onToggleOpen}>
+          {open ? t('collapseChat') : t('viewChat')}
         </button>
         <button type="button" className="dsh-av-btn" disabled={busyAction !== null} onClick={() => void runAction('unarchive')}>
-          {busyAction === 'unarchive' ? '恢复中…' : '恢复会话'}
+          {busyAction === 'unarchive' ? t('restoring') : t('restore')}
         </button>
         <button type="button" className="dsh-av-btn" disabled={busyAction !== null} onClick={() => void runAction('download')}>
-          {busyAction === 'download' ? '下载中…' : '下载日志 (ZIP)'}
+          {busyAction === 'download' ? t('downloading') : t('downloadZip')}
         </button>
         <button type="button" className="dsh-av-btn" disabled={busyAction !== null} onClick={() => void runAction('copy')}>
-          {busyAction === 'copy' ? '复制中…' : '复制 ID'}
+          {busyAction === 'copy' ? t('copying') : t('copyId')}
         </button>
       </div>
       {open && (
         <div className="dsh-av-log">
           {log.error !== null && <div className="dsh-av-log-error">{log.error}</div>}
-          {log.loading && log.events.length === 0 && <div className="dsh-av-log-empty">正在读取对话…</div>}
+          {log.loading && log.events.length === 0 && <div className="dsh-av-log-empty">{t('readingChat')}</div>}
           {!log.loading && log.error === null && log.events.length === 0 && (
-            <div className="dsh-av-log-empty">该会话没有可见消息（可能只有工具/系统事件）</div>
+            <div className="dsh-av-log-empty">{t('noMessages')}</div>
           )}
           {log.events.map(({ event }) => {
             if (!CHAT_TYPES.has(event.type)) return null
-            const role = event.type === 'user/message' ? '你' : '助手'
+            const role = event.type === 'user/message' ? t('roleYou') : t('roleAssistant')
             return (
               <div className="dsh-av-msg" key={event.seq}>
                 <span className="dsh-av-msg-role">{role} · {formatTime(event.time)}</span>
@@ -277,7 +417,7 @@ function ArchiveRow(props: {
           })}
           {log.hasMore && (
             <button type="button" className="dsh-av-btn dsh-av-load-older" disabled={log.loading} onClick={log.loadOlder}>
-              {log.loading ? '加载中…' : '加载更早'}
+              {log.loading ? t('loading') : t('loadOlder')}
             </button>
           )}
         </div>
@@ -289,6 +429,8 @@ function ArchiveRow(props: {
 /** 面板主体。 */
 export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void }): JSX.Element {
   const { stores, onClose } = props
+  const [settings, updateSettings, resetSettings] = useSettings()
+  const t = useMemo(() => makeT(resolveLang(settings.lang)), [settings.lang])
   const sessionState = useSyncExternalStore(
     subscribeOf(stores.sessions),
     snapshotOf(stores.sessions),
@@ -298,25 +440,77 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
     snapshotOf(stores.workspaces),
   )
   const [notices, setNotices] = useState<Readonly<Record<string, { text: string; kind?: 'error' }>>>({})
+  const [query, setQuery] = useState('')
+  const [effectiveQuery, setEffectiveQuery] = useState('')
+  const [openIds, setOpenIds] = useState<ReadonlySet<SessionId>>(new Set())
+  const [settingsOpen, setSettingsOpen] = useState(false)
 
   const workspaceTitles = useMemo(() => workspaceTitlesOf(workspaceState.items), [workspaceState.items])
 
-  // 归档集合是注册表全局的，行的摘要按 updatedAt 降序展示。
-  const rows = useMemo(() => {
+  // 归档集合是注册表全局的；排序/过滤在 rows 里做。
+  const baseRows = useMemo(() => {
     return workspaceState.archivedSessionIds
       .map((id) => {
         const summary = sessionState.byId[id]
-        const title = summary?.displayTitle ?? summary?.title ?? `未命名会话 (${id})`
+        const title = summary?.displayTitle ?? summary?.title ?? t('untitled', { id })
         const meta = summary === undefined
-          ? '摘要暂不可用'
-          : `${formatTime(summary.updatedAt)}${summary.running ? ' · 运行中' : ''}${summary.blank ? ' · 空白' : ''}`
-        return { id, title, meta, updatedAt: summary?.updatedAt ?? 0 }
+          ? t('summaryUnavailable')
+          : `${formatTime(summary.updatedAt)}${summary.running ? ` · ${t('running')}` : ''}${summary.blank ? ` · ${t('blank')}` : ''}`
+        return { id, title, meta, updatedAt: summary?.updatedAt ?? 0, workspace: workspaceTitles.get(id) }
       })
-      .sort((a, b) => b.updatedAt - a.updatedAt)
-  }, [workspaceState.archivedSessionIds, sessionState.byId])
+  }, [workspaceState.archivedSessionIds, sessionState.byId, workspaceTitles, t])
+
+  // 搜索输入防抖（250ms），避免逐键触发内容扫描。
+  useEffect(() => {
+    const handle = window.setTimeout(() => { setEffectiveQuery(query.trim()) }, 250)
+    return () => { window.clearTimeout(handle) }
+  }, [query])
+
+  const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
+  const contentSearch = useContentSearch(
+    stores.connection,
+    sessionIds,
+    effectiveQuery,
+    settings.deepSearch,
+    settings.deepSearchPages,
+  )
+
+  // 过滤 + 排序。
+  const rows = useMemo(() => {
+    const kw = effectiveQuery.toLowerCase()
+    let list = baseRows
+    if (kw !== '') {
+      list = list.filter((row) => (
+        row.title.toLowerCase().includes(kw)
+        || row.id.toLowerCase().includes(kw)
+        || (row.workspace?.toLowerCase().includes(kw) ?? false)
+        || (contentSearch.matches.get(row.id) ?? 0) > 0
+      ))
+    }
+    const dir = settings.sortDir === 'asc' ? 1 : -1
+    return [...list].sort((a, b) => {
+      switch (settings.sortKey) {
+        case 'title':
+          return a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' }) * dir
+        case 'sessionId':
+          return a.id.localeCompare(b.id, undefined, { numeric: true, sensitivity: 'base' }) * dir
+        default:
+          return (a.updatedAt - b.updatedAt) * dir
+      }
+    })
+  }, [baseRows, effectiveQuery, contentSearch.matches, settings.sortKey, settings.sortDir])
 
   const onNotice = useCallback((sessionId: string, text: string, kind?: 'error') => {
     setNotices(prev => ({ ...prev, [sessionId]: { text, kind } }))
+  }, [])
+
+  const toggleOpen = useCallback((id: SessionId) => {
+    setOpenIds(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
   }, [])
 
   // 取消归档：RPC 成功后 host/archived-sessions-changed 帧会实时更新归档集合，
@@ -326,51 +520,176 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
   const onUnarchive = useCallback(async (sessionId: string) => {
     try {
       await unarchiveSessionRpc(sessionId)
-      setBanner({ text: '会话已恢复，已回到原工作区分组' })
+      setBanner({ text: t('restored') })
     } catch (cause) {
-      setBanner({ text: `恢复失败：${cause instanceof Error ? cause.message : String(cause)}`, kind: 'error' })
+      setBanner({ text: t('restoreFailed', { msg: cause instanceof Error ? cause.message : String(cause) }), kind: 'error' })
     }
     window.clearTimeout(bannerTimer.current)
     bannerTimer.current = window.setTimeout(() => setBanner(null), 5000)
-  }, [])
+  }, [t])
+
+  const dismissNote = useCallback(() => {
+    updateSettings({ showNote: false })
+    setBanner({ text: t('noteDismissed') })
+    window.clearTimeout(bannerTimer.current)
+    bannerTimer.current = window.setTimeout(() => setBanner(null), 5000)
+  }, [updateSettings, t])
 
   useEffect(() => () => { window.clearTimeout(bannerTimer.current) }, [])
 
   return (
     <div data-dsh-archive-viewer-panel>
       <div className="dsh-av-header">
-        <h2 className="dsh-av-title">已归档会话</h2>
-        <span className="dsh-av-count">{rows.length} 个</span>
-        <button type="button" className="dsh-av-close" onClick={onClose}>关闭</button>
+        <h2 className="dsh-av-title">{t('panelTitle')}</h2>
+        <span className="dsh-av-count">{t('count', { n: rows.length })}</span>
+        <button type="button" className="dsh-av-close" onClick={onClose}>{t('close')}</button>
       </div>
-      <div className="dsh-av-body">
-        <div className="dsh-av-note">
-          归档会话被隐藏在所有会话列表与搜索之外，但日志、附件与工作区分组位置完整保留。可查看对话、导出 ZIP，或点击「恢复会话」取消归档——恢复后立即回到原工作区分组。
+
+      {/* 工具栏：搜索 + 排序 + 排列 + 设置 */}
+      <div className="dsh-av-toolbar">
+        <div className="dsh-av-search">
+          <span className="dsh-av-search-icon" dangerouslySetInnerHTML={{ __html: SEARCH_ICON }} />
+          <input
+            type="search"
+            className="dsh-av-search-input"
+            value={query}
+            placeholder={t('searchPlaceholder')}
+            aria-label={t('searchPlaceholder')}
+            onChange={(event) => { setQuery(event.target.value) }}
+          />
+          <button
+            type="button"
+            className="dsh-av-search-content"
+            data-active={settings.deepSearch || undefined}
+            title={t('searchContentTip')}
+            aria-pressed={settings.deepSearch}
+            onClick={() => { updateSettings({ deepSearch: !settings.deepSearch }) }}
+          >
+            {t('searchContent')}
+          </button>
         </div>
+        <div className="dsh-av-toolbar-actions">
+          <select
+            className="dsh-av-select"
+            aria-label={t('sortBy')}
+            value={settings.sortKey}
+            onChange={(event) => { updateSettings({ sortKey: event.target.value as 'updatedAt' | 'title' | 'sessionId' }) }}
+          >
+            <option value="updatedAt">{t('sortUpdatedAt')}</option>
+            <option value="title">{t('sortTitle')}</option>
+            <option value="sessionId">{t('sortSessionId')}</option>
+          </select>
+          <button
+            type="button"
+            className="dsh-av-icon-btn"
+            title={`${t('direction')} · ${t(settings.sortDir === 'asc' ? 'asc' : 'desc')}`}
+            aria-label={t(settings.sortDir === 'asc' ? 'asc' : 'desc')}
+            onClick={() => { updateSettings({ sortDir: settings.sortDir === 'asc' ? 'desc' : 'asc' }) }}
+          >
+            <span aria-hidden="true">{settings.sortDir === 'asc' ? '↑' : '↓'}</span>
+          </button>
+          <div className="dsh-av-seg" role="group" aria-label={t('layout')}>
+            <button
+              type="button"
+              className="dsh-av-seg-btn"
+              data-active={settings.layout === 'list' || undefined}
+              aria-pressed={settings.layout === 'list'}
+              title={t('layoutList')}
+              onClick={() => { updateSettings({ layout: 'list' }) }}
+            >
+              <span dangerouslySetInnerHTML={{ __html: LIST_ICON }} />
+            </button>
+            <button
+              type="button"
+              className="dsh-av-seg-btn"
+              data-active={settings.layout === 'grid' || undefined}
+              aria-pressed={settings.layout === 'grid'}
+              title={t('layoutGrid')}
+              onClick={() => { updateSettings({ layout: 'grid' }) }}
+            >
+              <span dangerouslySetInnerHTML={{ __html: GRID_ICON }} />
+            </button>
+          </div>
+          <button
+            type="button"
+            className="dsh-av-icon-btn"
+            data-active={settingsOpen || undefined}
+            title={t('settings')}
+            aria-label={t('settings')}
+            aria-expanded={settingsOpen}
+            onClick={() => { setSettingsOpen(value => !value) }}
+          >
+            <span dangerouslySetInnerHTML={{ __html: GEAR_ICON }} />
+          </button>
+        </div>
+      </div>
+
+      {settingsOpen && (
+        <SettingsPanel
+          settings={settings}
+          update={updateSettings}
+          reset={resetSettings}
+          t={t}
+          onClose={() => { setSettingsOpen(false) }}
+        />
+      )}
+
+      <div className="dsh-av-body">
+        {settings.showNote && (
+          <div className="dsh-av-note">
+            <span className="dsh-av-note-text">{t('note')}</span>
+            <button
+              type="button"
+              className="dsh-av-note-close"
+              aria-label={t('close')}
+              title={t('close')}
+              onClick={dismissNote}
+            >
+              ×
+            </button>
+          </div>
+        )}
+        {(contentSearch.scanning || contentSearch.unavailable) && (
+          <div className="dsh-av-scanning" data-kind={contentSearch.unavailable ? 'error' : undefined}>
+            {contentSearch.unavailable
+              ? t('connUnavailable')
+              : t('searchingContent', { done: contentSearch.done, total: contentSearch.total })}
+          </div>
+        )}
         {banner !== null && (
           <div className="dsh-av-notice" data-kind={banner.kind}>{banner.text}</div>
         )}
-        <div className="dsh-av-list">
-          {!workspaceState.baselinesReady && <div className="dsh-av-empty">正在加载会话列表…</div>}
-          {workspaceState.baselinesReady && rows.length === 0 && <div className="dsh-av-empty">没有已归档的会话</div>}
-          {rows.map((row) => (
-            <div key={row.id}>
-              <ArchiveRow
-                connection={stores.connection}
-                sessionId={row.id}
-                title={row.title}
-                meta={row.meta}
-                workspace={workspaceTitles.get(row.id)}
-                onNotice={onNotice}
-                onUnarchive={onUnarchive}
-              />
-              {notices[row.id] !== undefined && (
-                <div className="dsh-av-notice" data-kind={notices[row.id]!.kind}>
-                  {notices[row.id]!.text}
-                </div>
-              )}
-            </div>
-          ))}
+        <div className="dsh-av-list" data-layout={settings.layout}>
+          {!workspaceState.baselinesReady && <div className="dsh-av-empty">{t('loadingSessions')}</div>}
+          {workspaceState.baselinesReady && rows.length === 0 && (
+            <div className="dsh-av-empty">{effectiveQuery === '' ? t('noArchived') : t('noMatch')}</div>
+          )}
+          {rows.map((row) => {
+            const open = openIds.has(row.id)
+            const hits = effectiveQuery === '' ? 0 : (contentSearch.matches.get(row.id) ?? 0)
+            const meta = hits > 0 ? `${row.meta} · ${t('contentMatches', { n: hits })}` : row.meta
+            return (
+              <div key={row.id} data-expanded={open || undefined}>
+                <ArchiveRow
+                  connection={stores.connection}
+                  sessionId={row.id}
+                  title={row.title}
+                  meta={meta}
+                  workspace={row.workspace}
+                  open={open}
+                  onToggleOpen={() => { toggleOpen(row.id) }}
+                  onNotice={onNotice}
+                  onUnarchive={onUnarchive}
+                  t={t}
+                />
+                {notices[row.id] !== undefined && (
+                  <div className="dsh-av-notice" data-kind={notices[row.id]!.kind}>
+                    {notices[row.id]!.text}
+                  </div>
+                )}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>

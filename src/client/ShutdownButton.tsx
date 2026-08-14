@@ -5,7 +5,9 @@
  * 点击后经确认框调用宿主 host.shutdown RPC（等价于在启动终端按 Ctrl+C）：
  * 宿主以标准 5 秒宽限优雅收尾后退出；会话日志均已持久化，重启后原样恢复。
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
+import { makeT, resolveLang } from './i18n.ts'
+import { useSettings } from './settings.ts'
 
 /** 电源图标（与 shell 16px 导航图标观感一致）。 */
 const POWER_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 1.5v6"/><path d="M4.9 3.3a5.5 5.5 0 1 0 6.2 0"/></svg>`
@@ -41,16 +43,20 @@ async function shutdownRpc(): Promise<void> {
 /** 右上角关闭按钮（无 owner 注入，自给自足）。 */
 export function ShutdownButton(): JSX.Element {
   const [shuttingDown, setShuttingDown] = useState(false)
+  const [settings] = useSettings()
+  // 文案跟随设置里的语言偏好（与面板同步）。
+  const t = useMemo(() => makeT(resolveLang(settings.lang)), [settings.lang])
+  const title = t('shutdownTitle')
 
   const onShutdown = async (): Promise<void> => {
     if (shuttingDown) return
-    if (!window.confirm('确定要关闭 dsh 吗？\n\n所有会话日志均已持久化，重启后原样恢复。')) return
+    if (!window.confirm(t('shutdownConfirm'))) return
     setShuttingDown(true)
     try {
       await shutdownRpc()
       // 成功后进程即将退出；按钮保持「关闭中」状态直到页面断开。
     } catch (cause) {
-      window.alert(`关闭失败：${cause instanceof Error ? cause.message : String(cause)}`)
+      window.alert(t('shutdownFailed', { msg: cause instanceof Error ? cause.message : String(cause) }))
       setShuttingDown(false)
     }
   }
@@ -59,8 +65,8 @@ export function ShutdownButton(): JSX.Element {
     <button
       type="button"
       className="dsh-av-shutdown"
-      aria-label="关闭 dsh"
-      title="关闭 dsh"
+      aria-label={title}
+      title={title}
       disabled={shuttingDown}
       onClick={() => { void onShutdown() }}
     >

@@ -8,11 +8,13 @@
  *
  * 失败策略：注册逻辑不抛错；即使槽位不可用也只影响本插件，不拖垮 GUI。
  */
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { ArchivePanelView } from './ArchivePanel.tsx'
 import { ShutdownButton } from './ShutdownButton.tsx'
 import { CSS_TEXT } from './style.ts'
+import { makeT, resolveLang } from './i18n.ts'
+import { useSettings } from './settings.ts'
 import type { ArchiveStores, ConnectionHandle, ViewerContext } from './types.ts'
 
 /** 需要等待注入的服务（slots 由 client-runtime 提供）。 */
@@ -44,6 +46,10 @@ function injectCss(): void {
 export function ArchiveTrigger(props: { wide: boolean } & { stores: ArchiveStores }): JSX.Element {
   const { wide, stores } = props
   const [open, setOpen] = useState(false)
+  const [settings] = useSettings()
+  // 入口标签跟随设置里的语言偏好（与面板同步）。
+  const t = useMemo(() => makeT(resolveLang(settings.lang)), [settings.lang])
+  const label = t('panelTitle')
 
   return (
     <div data-dsh-archive-viewer-layer data-rail={!wide || undefined}>
@@ -56,12 +62,12 @@ export function ArchiveTrigger(props: { wide: boolean } & { stores: ArchiveStore
           type="button"
           data-dsh-archive-viewer-badge
           data-active={open || undefined}
-          aria-label="已归档会话"
+          aria-label={label}
           aria-expanded={open}
           onClick={() => setOpen(value => !value)}
         >
           <span dangerouslySetInnerHTML={{ __html: ICON }} />
-          {wide && <span data-dsh-archive-viewer-badge-label>已归档会话</span>}
+          {wide && <span data-dsh-archive-viewer-badge-label>{label}</span>}
         </button>
       </div>
     </div>
@@ -84,7 +90,7 @@ export function apply(ctx: ViewerContext): void {
     name: 'sidebar.footer.action',
     id: 'archive-viewer',
     order: 10,
-    label: () => '已归档会话',
+    label: () => makeT(resolveLang('auto'))('panelTitle'),
     inject: () => ({ stores }),
   }, ArchiveTrigger))
 
@@ -92,6 +98,6 @@ export function apply(ctx: ViewerContext): void {
     name: 'conversation.session.header.utilities',
     id: 'archive-viewer-shutdown',
     order: 100,
-    label: () => '关闭 dsh',
+    label: () => makeT(resolveLang('auto'))('shutdownTitle'),
   }, ShutdownButton))
 }

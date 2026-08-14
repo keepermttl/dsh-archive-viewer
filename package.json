@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-archive-viewer",
-  "version": "0.1.4",
-  "description": "查看已归档会话的 DSH Web 客户端插件：侧边栏插件栏入口列出全部归档会话，支持阅读对话日志与下载 ZIP 导出（DSH 暂无取消归档 API，只读）。",
+  "version": "0.2.0",
+  "description": "查看已归档会话的 DSH Web 客户端插件：关键词搜索（含对话内容）、排序、列表/网格排列、双语界面与可配置设置；支持阅读对话日志与下载 ZIP 导出。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
