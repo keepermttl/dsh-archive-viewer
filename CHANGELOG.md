@@ -6,7 +6,7 @@
 Version history of this project. Each release is its own section — history is
 never overwritten. Semantic versioning.
 
-## [1.4.0] — 2026-08-14
+## [2.0.0] — 2026-08-14
 
 ### 新增（Added）
 
@@ -25,7 +25,7 @@ never overwritten. Semantic versioning.
 
 ### 变更（Changed）
 
-- 版本号 0.1.4 → 1.4.0；README 中英双语文档同步更新
+- 版本号 0.1.4 → 2.0.0；README 中英双语文档同步更新
 
 ### Added (English)
 
@@ -58,5 +58,5 @@ never overwritten. Semantic versioning.
 - "Shut down dsh" button in the conversation header (`host.shutdown` graceful teardown)
 - Skin-adaptive styling via `--dsw-alias-*` design tokens; panel portaled to `document.body`
 
-[1.4.0]: https://github.com/keepermttl/dsh-archive-viewer/releases/tag/v1.4
+[2.0.0]: https://github.com/keepermttl/dsh-archive-viewer/releases/tag/v2.0
 [0.1.4]: https://github.com/keepermttl/dsh-archive-viewer/commit/41998c0
