@@ -2,7 +2,7 @@
 
 Archived-session manager for the **DeepSeek Harness (DSH) Web GUI**: browse, read, and **restore archived sessions**, plus a one-click **shutdown button** in the header.
 
-中文说明见 [README.md](README.md)。
+中文说明见 [README.md](README.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
 
 ## Features
 

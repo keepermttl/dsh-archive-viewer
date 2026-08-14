@@ -36,7 +36,8 @@ async function shutdownRpc(): Promise<void> {
     result?: { ok?: boolean; error?: { message?: string } }
   }
   if (envelope.result?.ok !== true) {
-    throw new Error(envelope.result?.error?.message ?? '未知错误')
+    // 无 message 时抛出空消息，由调用方用当前语言的「未知错误」兜底。
+    throw new Error(envelope.result?.error?.message ?? '')
   }
 }
 
@@ -56,7 +57,8 @@ export function ShutdownButton(): JSX.Element {
       await shutdownRpc()
       // 成功后进程即将退出；按钮保持「关闭中」状态直到页面断开。
     } catch (cause) {
-      window.alert(t('shutdownFailed', { msg: cause instanceof Error ? cause.message : String(cause) }))
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      window.alert(t('shutdownFailed', { msg }))
       setShuttingDown(false)
     }
   }

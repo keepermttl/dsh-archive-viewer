@@ -2,7 +2,7 @@
 
 DeepSeek Harness（DSH）Web GUI 的归档会话管理插件：**查看 / 恢复已归档会话**，外加右上角**一键关闭 dsh**。
 
-English: [README.en.md](README.en.md)
+English: [README.en.md](README.en.md) · 更新日志: [CHANGELOG.md](CHANGELOG.md)
 
 ## 功能
 

@@ -14,7 +14,7 @@ import { ArchivePanelView } from './ArchivePanel.tsx'
 import { ShutdownButton } from './ShutdownButton.tsx'
 import { CSS_TEXT } from './style.ts'
 import { makeT, resolveLang } from './i18n.ts'
-import { useSettings } from './settings.ts'
+import { loadSettings, useSettings } from './settings.ts'
 import type { ArchiveStores, ConnectionHandle, ViewerContext } from './types.ts'
 
 /** 需要等待注入的服务（slots 由 client-runtime 提供）。 */
@@ -90,7 +90,8 @@ export function apply(ctx: ViewerContext): void {
     name: 'sidebar.footer.action',
     id: 'archive-viewer',
     order: 10,
-    label: () => makeT(resolveLang('auto'))('panelTitle'),
+    // 每次调用都读最新设置，跟随手动语言偏好。
+    label: () => makeT(resolveLang(loadSettings().lang))('panelTitle'),
     inject: () => ({ stores }),
   }, ArchiveTrigger))
 
@@ -98,6 +99,6 @@ export function apply(ctx: ViewerContext): void {
     name: 'conversation.session.header.utilities',
     id: 'archive-viewer-shutdown',
     order: 100,
-    label: () => makeT(resolveLang('auto'))('shutdownTitle'),
+    label: () => makeT(resolveLang(loadSettings().lang))('shutdownTitle'),
   }, ShutdownButton))
 }

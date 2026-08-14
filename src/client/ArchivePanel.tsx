@@ -121,7 +121,8 @@ async function unarchiveSessionRpc(sessionId: string): Promise<void> {
     result?: { ok?: boolean; error?: { message?: string } }
   }
   if (envelope.result?.ok !== true) {
-    throw new Error(envelope.result?.error?.message ?? '未知错误')
+    // 无 message 时抛出空消息，由调用方用当前语言的「未知错误」兜底。
+    throw new Error(envelope.result?.error?.message ?? '')
   }
 }
 
@@ -151,6 +152,7 @@ function useSessionLog(
   connection: ConnectionHandle | undefined,
   sessionId: SessionId,
   enabled: boolean,
+  t: TFunc,
 ): {
   events: HistoryEntry[]
   hasMore: boolean
@@ -165,7 +167,7 @@ function useSessionLog(
 
   const fetchPage = useCallback(async (beforeSeq: number | undefined): Promise<{ events: HistoryEntry[]; hasMore: boolean } | null> => {
     if (connection === undefined) {
-      setError('connection 服务不可用')
+      setError(t('connUnavailable'))
       return null
     }
     try {
@@ -176,7 +178,7 @@ function useSessionLog(
       })
       // RPC 响应的 ok/value/error 都挂在 result 层（rpcId + result 信封）。
       if (!response.result.ok) {
-        setError(`读取失败：${response.result.error?.message ?? '未知错误'}`)
+        setError(t('readFailed', { msg: response.result.error?.message ?? t('unknownError') }))
         return null
       }
       return {
@@ -184,10 +186,10 @@ function useSessionLog(
         hasMore: response.result.value?.hasMore ?? false,
       }
     } catch (cause) {
-      setError(`读取失败：${cause instanceof Error ? cause.message : String(cause)}`)
+      setError(t('readFailed', { msg: cause instanceof Error ? cause.message : String(cause) }))
       return null
     }
-  }, [connection, sessionId])
+  }, [connection, sessionId, t])
 
   // 首次展开时加载尾部一页。
   useEffect(() => {
@@ -356,7 +358,7 @@ function ArchiveRow(props: {
 }): JSX.Element {
   const { connection, sessionId, title, meta, workspace, open, onToggleOpen, onNotice, onUnarchive, t } = props
   const [busyAction, setBusyAction] = useState<string | null>(null)
-  const log = useSessionLog(connection, sessionId, open)
+  const log = useSessionLog(connection, sessionId, open, t)
 
   const runAction = useCallback(async (kind: 'download' | 'copy' | 'unarchive') => {
     setBusyAction(kind)
@@ -371,7 +373,8 @@ function ArchiveRow(props: {
         await onUnarchive(sessionId)
       }
     } catch (cause) {
-      onNotice(sessionId, t('actionFailed', { msg: cause instanceof Error ? cause.message : String(cause) }), 'error')
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      onNotice(sessionId, t('actionFailed', { msg }), 'error')
     } finally {
       setBusyAction(null)
     }
@@ -522,7 +525,8 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
       await unarchiveSessionRpc(sessionId)
       setBanner({ text: t('restored') })
     } catch (cause) {
-      setBanner({ text: t('restoreFailed', { msg: cause instanceof Error ? cause.message : String(cause) }), kind: 'error' })
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      setBanner({ text: t('restoreFailed', { msg }), kind: 'error' })
     }
     window.clearTimeout(bannerTimer.current)
     bannerTimer.current = window.setTimeout(() => setBanner(null), 5000)
@@ -567,6 +571,17 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           >
             {t('searchContent')}
           </button>
+          {query !== '' && (
+            <button
+              type="button"
+              className="dsh-av-search-clear"
+              aria-label={t('close')}
+              title={t('close')}
+              onClick={() => { setQuery('') }}
+            >
+              ×
+            </button>
+          )}
         </div>
         <div className="dsh-av-toolbar-actions">
           <select
