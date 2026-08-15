@@ -22,8 +22,11 @@ import type {
   ArchiveStores, ConnectionHandle, HistoryEntry, SessionEvent, SessionId,
 } from './types.ts'
 import { makeT, resolveLang, type TFunc } from './i18n.ts'
-import { useSettings } from './settings.ts'
+import { useSettings, type TagFilterMode } from './settings.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
+import { AiHelper, type ArchiveRowInfo } from './AiHelper.tsx'
+import { HIDDEN_TAG, useTags } from './tags.ts'
+import { useHelperSessionIds } from './helperSessions.ts'
 
 /** 历史一页的消息数（chunk/tool 事件随消息成组返回，20 条消息已是一大页）。 */
 const PAGE_SIZE = 20
@@ -351,13 +354,19 @@ function ArchiveRow(props: {
   meta: string
   workspace: string | undefined
   open: boolean
+  tags: readonly string[]
   onToggleOpen(): void
   onNotice(sessionId: SessionId, text: string, kind?: 'error'): void
   onUnarchive(sessionId: SessionId): Promise<void>
+  onAddTag(sessionId: SessionId, tag: string): Promise<void>
+  onRemoveTag(sessionId: SessionId, tag: string): Promise<void>
   t: TFunc
 }): JSX.Element {
-  const { connection, sessionId, title, meta, workspace, open, onToggleOpen, onNotice, onUnarchive, t } = props
+  const { connection, sessionId, title, meta, workspace, open, tags, onToggleOpen, onNotice, onUnarchive, onAddTag, onRemoveTag, t } = props
   const [busyAction, setBusyAction] = useState<string | null>(null)
+  const [tagEditorOpen, setTagEditorOpen] = useState(false)
+  const [tagInput, setTagInput] = useState('')
+  const [tagBusy, setTagBusy] = useState(false)
   const log = useSessionLog(connection, sessionId, open, t)
 
   const runAction = useCallback(async (kind: 'download' | 'copy' | 'unarchive') => {
@@ -380,6 +389,36 @@ function ArchiveRow(props: {
     }
   }, [sessionId, onNotice, onUnarchive, t])
 
+  const runTagAdd = useCallback(async () => {
+    const tag = tagInput.trim().replace(/\s+/g, ' ')
+    if (tag === '' || tagBusy) return
+    setTagBusy(true)
+    try {
+      await onAddTag(sessionId, tag)
+      setTagInput('')
+      setTagEditorOpen(false)
+      onNotice(sessionId, t('tagAdded'))
+    } catch (cause) {
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      onNotice(sessionId, t('actionFailed', { msg }), 'error')
+    } finally {
+      setTagBusy(false)
+    }
+  }, [tagInput, tagBusy, sessionId, onAddTag, onNotice, t])
+
+  const runTagRemove = useCallback(async (tag: string) => {
+    if (tagBusy) return
+    setTagBusy(true)
+    try {
+      await onRemoveTag(sessionId, tag)
+    } catch (cause) {
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      onNotice(sessionId, t('actionFailed', { msg }), 'error')
+    } finally {
+      setTagBusy(false)
+    }
+  }, [tagBusy, sessionId, onRemoveTag, onNotice, t])
+
   return (
     <div className="dsh-av-row">
       <div className="dsh-av-row-head">
@@ -387,6 +426,25 @@ function ArchiveRow(props: {
         {workspace !== undefined && <span className="dsh-av-badge">{workspace}</span>}
         <span className="dsh-av-row-meta">{meta}</span>
       </div>
+      {tags.length > 0 && (
+        <div className="dsh-av-tags">
+          {tags.map(tag => (
+            <span key={tag} className="dsh-av-tag">
+              <span className="dsh-av-tag-text">{tag}</span>
+              <button
+                type="button"
+                className="dsh-av-tag-remove"
+                aria-label={t('removeTag', { tag })}
+                title={t('removeTag', { tag })}
+                disabled={tagBusy}
+                onClick={() => { void runTagRemove(tag) }}
+              >
+                ×
+              </button>
+            </span>
+          ))}
+        </div>
+      )}
       <div className="dsh-av-actions">
         <button type="button" className="dsh-av-btn" onClick={onToggleOpen}>
           {open ? t('collapseChat') : t('viewChat')}
@@ -400,7 +458,40 @@ function ArchiveRow(props: {
         <button type="button" className="dsh-av-btn" disabled={busyAction !== null} onClick={() => void runAction('copy')}>
           {busyAction === 'copy' ? t('copying') : t('copyId')}
         </button>
+        <button
+          type="button"
+          className="dsh-av-btn"
+          data-active={tagEditorOpen || undefined}
+          disabled={tagBusy}
+          onClick={() => { setTagEditorOpen(value => !value) }}
+        >
+          {t('tags')}
+        </button>
       </div>
+      {tagEditorOpen && (
+        <div className="dsh-av-tag-editor">
+          <input
+            type="text"
+            className="dsh-av-tag-input"
+            value={tagInput}
+            placeholder={t('tagPlaceholder')}
+            aria-label={t('tagPlaceholder')}
+            onChange={(event) => { setTagInput(event.target.value) }}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+                event.preventDefault()
+                void runTagAdd()
+              }
+            }}
+          />
+          <button type="button" className="dsh-av-btn" disabled={tagBusy || tagInput.trim() === ''} onClick={() => { void runTagAdd() }}>
+            {t('addTag')}
+          </button>
+          <button type="button" className="dsh-av-btn" disabled={tagBusy} onClick={() => { setTagEditorOpen(false) }}>
+            {t('close')}
+          </button>
+        </div>
+      )}
       {open && (
         <div className="dsh-av-log">
           {log.error !== null && <div className="dsh-av-log-error">{log.error}</div>}
@@ -447,12 +538,43 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
   const [effectiveQuery, setEffectiveQuery] = useState('')
   const [openIds, setOpenIds] = useState<ReadonlySet<SessionId>>(new Set())
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [selectedTags, setSelectedTags] = useState<ReadonlySet<string>>(new Set())
+  const [agentSearchActive, setAgentSearchActive] = useState(false)
+  const [filterOpen, setFilterOpen] = useState(false)
+  const [tagQuery, setTagQuery] = useState('')
+  const tagsApi = useTags(true, 5000)
+  const helperIds = useHelperSessionIds()
 
   const workspaceTitles = useMemo(() => workspaceTitlesOf(workspaceState.items), [workspaceState.items])
+
+  // 全部自定义标签（隐藏的 agent 检索标签不进入普通标签列表）。
+  const allTags = useMemo(() => {
+    const set = new Set<string>()
+    for (const list of Object.values(tagsApi.tags)) {
+      for (const tag of list) {
+        if (tag !== HIDDEN_TAG) set.add(tag)
+      }
+    }
+    return [...set].sort((a, b) => a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }))
+  }, [tagsApi.tags])
+
+  // agent 添加隐藏检索标签后，自动打开「Agent 检索」筛选。
+  useEffect(() => {
+    const hasHidden = Object.values(tagsApi.tags).some(list => list.includes(HIDDEN_TAG))
+    if (hasHidden) setAgentSearchActive(true)
+  }, [tagsApi.tags])
+
+  const activeFilterCount = (agentSearchActive ? 1 : 0) + selectedTags.size
+  const filteredTags = useMemo(() => {
+    const kw = tagQuery.trim().toLowerCase()
+    if (kw === '') return allTags
+    return allTags.filter(tag => tag.toLowerCase().includes(kw))
+  }, [allTags, tagQuery])
 
   // 归档集合是注册表全局的；排序/过滤在 rows 里做。
   const baseRows = useMemo(() => {
     return workspaceState.archivedSessionIds
+      .filter(id => !helperIds.has(id))
       .map((id) => {
         const summary = sessionState.byId[id]
         const title = summary?.displayTitle ?? summary?.title ?? t('untitled', { id })
@@ -461,7 +583,13 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           : `${formatTime(summary.updatedAt)}${summary.running ? ` · ${t('running')}` : ''}${summary.blank ? ` · ${t('blank')}` : ''}`
         return { id, title, meta, updatedAt: summary?.updatedAt ?? 0, workspace: workspaceTitles.get(id) }
       })
-  }, [workspaceState.archivedSessionIds, sessionState.byId, workspaceTitles, t])
+  }, [workspaceState.archivedSessionIds, sessionState.byId, workspaceTitles, t, helperIds])
+
+  // 给 AI 助手的归档会话清单（用于 agent 检索范围）。
+  const archiveRows = useMemo<ArchiveRowInfo[]>(
+    () => baseRows.map(row => ({ id: row.id, title: row.title, workspace: row.workspace })),
+    [baseRows],
+  )
 
   // 搜索输入防抖（250ms），避免逐键触发内容扫描。
   useEffect(() => {
@@ -478,9 +606,11 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
     settings.deepSearchPages,
   )
 
-  // 过滤 + 排序。
+  // 过滤（关键词 + 标签/Agent 检索） + 排序。
   const rows = useMemo(() => {
     const kw = effectiveQuery.toLowerCase()
+    const tagMode: TagFilterMode = settings.tagFilterMode
+    const customTags = [...selectedTags]
     let list = baseRows
     if (kw !== '') {
       list = list.filter((row) => (
@@ -489,6 +619,17 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
         || (row.workspace?.toLowerCase().includes(kw) ?? false)
         || (contentSearch.matches.get(row.id) ?? 0) > 0
       ))
+    }
+    if (agentSearchActive || customTags.length > 0) {
+      list = list.filter((row) => {
+        const rowTags = tagsApi.tags[row.id] ?? []
+        if (agentSearchActive && !rowTags.includes(HIDDEN_TAG)) return false
+        if (customTags.length === 0) return true
+        if (tagMode === 'and') {
+          return customTags.every(tag => rowTags.includes(tag))
+        }
+        return customTags.some(tag => rowTags.includes(tag))
+      })
     }
     const dir = settings.sortDir === 'asc' ? 1 : -1
     return [...list].sort((a, b) => {
@@ -501,7 +642,7 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           return (a.updatedAt - b.updatedAt) * dir
       }
     })
-  }, [baseRows, effectiveQuery, contentSearch.matches, settings.sortKey, settings.sortDir])
+  }, [baseRows, effectiveQuery, contentSearch.matches, settings.sortKey, settings.sortDir, selectedTags, agentSearchActive, tagsApi.tags, settings.tagFilterMode])
 
   const onNotice = useCallback((sessionId: string, text: string, kind?: 'error') => {
     setNotices(prev => ({ ...prev, [sessionId]: { text, kind } }))
@@ -538,6 +679,45 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
     window.clearTimeout(bannerTimer.current)
     bannerTimer.current = window.setTimeout(() => setBanner(null), 5000)
   }, [updateSettings, t])
+
+  const toggleTag = useCallback((tag: string) => {
+    setSelectedTags(prev => {
+      const next = new Set(prev)
+      if (next.has(tag)) next.delete(tag)
+      else next.add(tag)
+      return next
+    })
+  }, [])
+
+  const toggleAgentSearch = useCallback(async (active: boolean) => {
+    if (active) {
+      setAgentSearchActive(true)
+      return
+    }
+    setAgentSearchActive(false)
+    try {
+      await tagsApi.clearHidden()
+    } catch (cause) {
+      const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
+      setBanner({ text: t('actionFailed', { msg }), kind: 'error' })
+      window.clearTimeout(bannerTimer.current)
+      bannerTimer.current = window.setTimeout(() => setBanner(null), 5000)
+    }
+  }, [tagsApi, t])
+
+  const clearAllFilters = useCallback(() => {
+    setSelectedTags(new Set())
+    if (agentSearchActive) void toggleAgentSearch(false)
+  }, [agentSearchActive, toggleAgentSearch])
+
+  const handleAddTag = useCallback((sessionId: SessionId, tag: string) => {
+    if (tag === HIDDEN_TAG) return Promise.reject(new Error(t('reservedTag')))
+    return tagsApi.addTags(sessionId, [tag])
+  }, [tagsApi, t])
+
+  const handleRemoveTag = useCallback((sessionId: SessionId, tag: string) => {
+    return tagsApi.removeTags(sessionId, [tag])
+  }, [tagsApi])
 
   useEffect(() => () => { window.clearTimeout(bannerTimer.current) }, [])
 
@@ -603,6 +783,17 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           >
             <span aria-hidden="true">{settings.sortDir === 'asc' ? '↑' : '↓'}</span>
           </button>
+          <button
+            type="button"
+            className="dsh-av-filter-trigger"
+            data-active={filterOpen || activeFilterCount > 0 || undefined}
+            aria-expanded={filterOpen}
+            title={t('filterByTags')}
+            onClick={() => { setFilterOpen(value => !value) }}
+          >
+            <span>{t('filter')}</span>
+            {activeFilterCount > 0 && <span className="dsh-av-filter-count">{activeFilterCount}</span>}
+          </button>
           <div className="dsh-av-seg" role="group" aria-label={t('layout')}>
             <button
               type="button"
@@ -639,12 +830,102 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
         </div>
       </div>
 
+      {/* 筛选菜单：标签多选 + AND/OR + Agent 检索开关 + 标签搜索 */}
+      {filterOpen && (
+        <div className="dsh-av-filter-menu" role="dialog" aria-label={t('filterByTags')}>
+          <div className="dsh-av-filter-menu-head">
+            <span className="dsh-av-filter-menu-title">{t('filterByTags')}</span>
+            <button
+              type="button"
+              className="dsh-av-filter-menu-close"
+              aria-label={t('close')}
+              onClick={() => { setFilterOpen(false) }}
+            >
+              ×
+            </button>
+          </div>
+          <div className="dsh-av-filter-menu-row">
+            <span className="dsh-av-filter-menu-label">{t('tagFilterMode')}</span>
+            <div className="dsh-av-filter-mode" role="group" aria-label={t('tagFilterMode')}>
+              <button
+                type="button"
+                className="dsh-av-filter-mode-btn"
+                data-active={settings.tagFilterMode === 'or' || undefined}
+                aria-pressed={settings.tagFilterMode === 'or'}
+                onClick={() => { updateSettings({ tagFilterMode: 'or' }) }}
+              >
+                {t('tagFilterOr')}
+              </button>
+              <button
+                type="button"
+                className="dsh-av-filter-mode-btn"
+                data-active={settings.tagFilterMode === 'and' || undefined}
+                aria-pressed={settings.tagFilterMode === 'and'}
+                onClick={() => { updateSettings({ tagFilterMode: 'and' }) }}
+              >
+                {t('tagFilterAnd')}
+              </button>
+            </div>
+          </div>
+          <div className="dsh-av-filter-menu-row">
+            <button
+              type="button"
+              className="dsh-av-filter-chip"
+              data-active={agentSearchActive || undefined}
+              data-kind={agentSearchActive ? 'agent' : undefined}
+              aria-pressed={agentSearchActive}
+              title={t('agentSearchTip')}
+              onClick={() => { void toggleAgentSearch(!agentSearchActive) }}
+            >
+              {t('agentSearch')}
+            </button>
+          </div>
+          <input
+            type="search"
+            className="dsh-av-filter-search"
+            value={tagQuery}
+            placeholder={t('filterSearchPlaceholder')}
+            aria-label={t('filterSearchPlaceholder')}
+            onChange={(event) => { setTagQuery(event.target.value) }}
+          />
+          <div className="dsh-av-filter-menu-tags">
+            {filteredTags.map(tag => (
+              <button
+                key={tag}
+                type="button"
+                className="dsh-av-filter-chip"
+                data-active={selectedTags.has(tag) || undefined}
+                aria-pressed={selectedTags.has(tag)}
+                onClick={() => { toggleTag(tag) }}
+              >
+                {tag}
+              </button>
+            ))}
+            {filteredTags.length === 0 && (
+              <span className="dsh-av-filter-empty">{t('noTags')}</span>
+            )}
+          </div>
+          {activeFilterCount > 0 && (
+            <div className="dsh-av-filter-menu-foot">
+              <button
+                type="button"
+                className="dsh-av-btn"
+                onClick={clearAllFilters}
+              >
+                {t('clearFilters')}
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+
       {settingsOpen && (
         <SettingsPanel
           settings={settings}
           update={updateSettings}
           reset={resetSettings}
           t={t}
+          connection={stores.connection}
           onClose={() => { setSettingsOpen(false) }}
         />
       )}
@@ -683,6 +964,7 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
             const open = openIds.has(row.id)
             const hits = effectiveQuery === '' ? 0 : (contentSearch.matches.get(row.id) ?? 0)
             const meta = hits > 0 ? `${row.meta} · ${t('contentMatches', { n: hits })}` : row.meta
+            const rowTags = (tagsApi.tags[row.id] ?? []).filter(tag => tag !== HIDDEN_TAG)
             return (
               <div key={row.id} data-expanded={open || undefined}>
                 <ArchiveRow
@@ -692,9 +974,12 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
                   meta={meta}
                   workspace={row.workspace}
                   open={open}
+                  tags={rowTags}
                   onToggleOpen={() => { toggleOpen(row.id) }}
                   onNotice={onNotice}
                   onUnarchive={onUnarchive}
+                  onAddTag={handleAddTag}
+                  onRemoveTag={handleRemoveTag}
                   t={t}
                 />
                 {notices[row.id] !== undefined && (
@@ -707,6 +992,15 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           })}
         </div>
       </div>
+
+      <AiHelper
+        connection={stores.connection}
+        settings={settings}
+        t={t}
+        sessionState={sessionState}
+        archiveRows={archiveRows}
+        onTagsChanged={() => { void tagsApi.refresh() }}
+      />
     </div>
   )
 }

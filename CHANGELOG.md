@@ -6,6 +6,54 @@
 Version history of this project. Each release is its own section — history is
 never overwritten. Semantic versioning.
 
+## [3.0.0-test] — 2026-08-16
+
+### 新增（Added）
+
+- **内嵌 AI 助手小窗口**：归档面板底部新增可折叠的 AI 对话窗，直接通过 DSH 官方 `session.create` / `session.prompt` / `session.history` API 驱动真实 agent 会话（默认 `standard` 标准模式，可在设置中改为其他 agent preset）
+- **归档会话标签**：用户可在每个会话行上添加/删除自定义标签；标签由 host 半区持久化到 DSH profile 目录的 JSON 文件，并通过 `/api/archive-viewer/tags` 本地 HTTP API 读写
+- **agent 标签协作**：AI 助手会在首条消息中携带标签 API 地址与归档会话清单，agent 可用 `curl` 调同一 API 给会话加/删标签
+- **隐藏临时检索标签「agent检索」**：agent 检索命中后自动给会话添加隐藏标签，面板自动切换到「Agent 检索」筛选；该标签不显示在会话徽章上，用户取消勾选后自动清除
+- **标签筛选菜单**：所有标签收纳进工具栏「筛选」按钮内的菜单，支持多选、AND / OR 模式，并可在菜单内搜索标签；与关键词搜索、排序叠加生效
+- **AI 消息折叠**：AI 对话中的代码块与超长文本自动折叠为可展开区域，避免大量非自然语言内容刷屏
+- **AI 模型与思考强度**：设置中可选择 AI 助手使用的模型、Provider 与思考强度（reasoning effort），留空则使用会话默认
+- **AI 工作区**：设置中可指定 AI 助手会话的工作目录，默认 `E:\dsh-ai-workspace`
+- **AI 会话隐藏与清理**：AI 助手会话自动归档为内部 helper 会话，不出现在侧边栏，也不会出现在归档面板；「新对话」会安全删除上一个 helper 会话（仅删除本插件登记过的会话，不会误删用户归档/普通会话）
+- **AI 会话复用**：AI 助手会话 id 保存在 localStorage，关闭面板再打开会复用同一会话（模式匹配时），避免反复新建 DSH 会话；「新对话」可随时重置
+
+### 修复（Fixed）
+
+- 取消「Agent 检索」筛选时，隐藏标签现在会乐观清除并暂停周期刷新，避免旧标签回灌导致筛选没有及时关闭
+
+### 变更（Changed）
+
+- 设置面板新增「AI 模式」：可从已安装 agent preset 中选择（或手动输入 preset id），默认 `standard`
+- 设置项新增标签筛选模式（AND / OR），默认 OR
+- host 半区从“仅占位”升级为提供标签存储与 HTTP API；需要重启 `dsh web` 后生效
+
+### Added (English)
+
+- **Embedded AI assistant window**: collapsible chat at the bottom of the archive panel, powered by real DSH sessions through official `session.create` / `session.prompt` / `session.history` APIs (default `standard` preset, configurable in Settings)
+- **Archived-session tags**: users can add/remove custom tags per row; tags are persisted by the host half in a JSON file under the DSH profile and exposed through the `/api/archive-viewer/tags` local HTTP API
+- **Agent tag collaboration**: the AI assistant sends the tag API URL and archived session list in its first message, so the agent can use `curl` to add/remove tags
+- **Hidden temporary search tag "agent检索"**: the agent tags matching sessions with a hidden tag, the panel automatically switches to the "Agent search" filter; the tag is not shown on session badges and is cleared when the user unchecks it
+- **Tag filter menu**: all tags are collected inside a toolbar "Filter" button menu with multi-select, AND / OR mode, and tag search; combined with keyword search and sorting
+- **AI message folding**: code blocks and very long text in AI replies are automatically collapsed into expandable sections
+- **AI model & reasoning effort**: Settings can choose the AI assistant's model, provider, and reasoning effort (empty = session default)
+- **AI workspace**: Settings can set the working directory for AI assistant sessions; default is `E:\dsh-ai-workspace`
+- **AI session hiding & cleanup**: AI helper sessions are archived automatically as internal helper sessions, so they do not appear in the sidebar or archive panel; "New chat" safely deletes the previous helper session (only sessions registered by this plugin, never user sessions)
+- **AI session reuse**: the AI helper session id is kept in localStorage and reused across panel opens (when the mode matches), reducing session clutter; "New chat" resets it
+
+### Fixed (English)
+
+- Unchecking "Agent search" now optimistically clears hidden tags and pauses periodic refresh, preventing stale tags from re-enabling the filter
+
+### Changed (English)
+
+- Settings gained "AI mode": choose from installed agent presets (or type a preset id), default `standard`
+- New tag-filter mode setting (AND / OR), default OR
+- The host half now stores tags and serves a local HTTP API; restart `dsh web` to activate
+
 ## [2.0.0] — 2026-08-14
 
 ### 新增（Added）
