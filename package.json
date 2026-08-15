@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-archive-viewer",
-  "version": "2.0.0",
-  "description": "查看已归档会话的 DSH Web 客户端插件：关键词搜索（含对话内容）、排序、列表/网格排列、双语界面与可配置设置；支持阅读对话日志与下载 ZIP 导出。",
+  "version": "3.0.0-test",
+  "description": "查看已归档会话的 DSH Web 客户端插件：关键词搜索（含对话内容）、排序与标签筛选、内嵌 AI 助手（标准模式 agent）、归档会话标签、列表/网格排列、双语界面与可配置设置；支持阅读对话日志与下载 ZIP 导出。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -36,6 +36,7 @@
   },
   "license": "MIT",
   "devDependencies": {
+    "@types/node": "^22.20.0",
     "@types/react": "~18.3.1",
     "@types/react-dom": "~18.3.0",
     "react": "^18.2.0",

@@ -129,11 +129,142 @@ export interface HistoryResponse {
   }
 }
 
+/** session.create 的 RPC 响应结构子集。 */
+export interface SessionCreateResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: { sessionId: SessionId; agentPreset?: string }
+    error?: { code: string; message: string }
+  }
+}
+
+/** session.prompt 的 RPC 响应结构子集。 */
+export interface SessionPromptResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: { accepted: true; command?: { kind: string; text?: string } }
+    error?: { code: string; message: string }
+  }
+}
+
+/** agentPreset.list 的 RPC 响应结构子集。 */
+export interface AgentPresetListResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: {
+      presets: {
+        id: string
+        name?: string
+        description?: string
+        isDefault?: boolean
+        trust?: string
+      }[]
+    }
+    error?: { code: string; message: string }
+  }
+}
+
+/** 归档会话标签映射（sessionId → 标签列表）。 */
+export type TagMap = Readonly<Record<SessionId, readonly string[]>>
+
+/** 模型推理强度（reasoning effort）结构子集。 */
+export interface ModelReasoningEffort {
+  id: string
+  name: string
+  description?: string
+}
+
+/** 目录中的单个模型（ModelCatalogModel 结构子集）。 */
+export interface ModelCatalogModel {
+  id: string
+  name: string
+  description?: string
+  reasoning?: {
+    efforts: ModelReasoningEffort[]
+    defaultEffort?: string
+  }
+}
+
+/** 一个 provider 及其模型列表（ModelProviderGroup 结构子集）。 */
+export interface ModelProviderGroup {
+  id: string
+  name: string
+  models: ModelCatalogModel[]
+}
+
+/** llm.models 的 RPC 响应结构子集。 */
+export interface LlmModelsResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: {
+      groups: ModelProviderGroup[]
+      failures?: unknown[]
+    }
+    error?: { code: string; message: string }
+  }
+}
+
+/** session.models 的 RPC 响应结构子集。 */
+export interface SessionModelsResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: {
+      current?: { provider: string; model: string; reasoningEffort?: string }
+      routable?: boolean
+      groups?: ModelProviderGroup[]
+      failures?: unknown[]
+    }
+    error?: { code: string; message: string }
+  }
+}
+
+/** session.selectModel 的 RPC 响应结构子集。 */
+export interface SessionSelectModelResponse {
+  rpcId: string
+  result: {
+    ok: boolean
+    value?: {
+      selected: { provider: string; model: string; reasoningEffort?: string }
+    }
+    error?: { code: string; message: string }
+  }
+}
+
 /** connection 服务句柄（ConnectionHandle 结构子集）。 */
 export interface ConnectionHandle {
   api: {
     sessions: {
+      create(payload: {
+        workspaceId?: string
+        cwd?: string
+        sessionId?: SessionId
+        agentPreset?: string
+      }): Promise<SessionCreateResponse>
       history(payload: { sessionId: SessionId; beforeSeq?: number; maxMessages?: number }): Promise<HistoryResponse>
+      prompt(payload: {
+        sessionId: SessionId
+        mode: 'queue' | 'steer'
+        content: { type: 'text'; text: string }[]
+        clientTimeZone?: string
+      }): Promise<SessionPromptResponse>
+      models(payload: { sessionId: SessionId }): Promise<SessionModelsResponse>
+      selectModel(payload: {
+        sessionId: SessionId
+        provider: string
+        model: string
+        reasoningEffort?: string
+      }): Promise<SessionSelectModelResponse>
+    }
+    agentPresets?: {
+      list(payload?: {}): Promise<AgentPresetListResponse>
+    }
+    llm?: {
+      models(payload?: {}): Promise<LlmModelsResponse>
     }
   }
 }

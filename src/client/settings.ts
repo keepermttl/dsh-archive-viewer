@@ -17,6 +17,9 @@ export type SortDir = 'asc' | 'desc'
 /** 排列方式：竖列（列表）/ 横排（网格）。 */
 export type LayoutKind = 'list' | 'grid'
 
+/** 标签筛选模式：AND（满足全部选中标签）/ OR（满足任一选中标签）。 */
+export type TagFilterMode = 'and' | 'or'
+
 /** 全部可持久化设置项。 */
 export interface ArchiveSettings {
   /** 语言偏好（auto = 跟随浏览器）。 */
@@ -33,6 +36,18 @@ export interface ArchiveSettings {
   deepSearch: boolean
   /** 内容搜索时每会话从尾部最多扫描的页数（每页 PAGE_SIZE 条消息）。 */
   deepSearchPages: number
+  /** AI 助手使用的 agent preset id（默认 standard 标准模式）。 */
+  aiMode: string
+  /** AI 助手使用的模型 provider（空 = 使用会话默认）。 */
+  aiProvider: string
+  /** AI 助手使用的模型 id（空 = 使用会话默认）。 */
+  aiModel: string
+  /** AI 助手使用的思考强度 / reasoning effort（空 = 使用模型默认）。 */
+  aiReasoningEffort: string
+  /** AI 助手会话的工作目录（cwd）。 */
+  aiWorkspace: string
+  /** 标签筛选模式：and = 同时满足，or = 满足任一。 */
+  tagFilterMode: TagFilterMode
 }
 
 export const DEFAULT_SETTINGS: ArchiveSettings = {
@@ -43,6 +58,12 @@ export const DEFAULT_SETTINGS: ArchiveSettings = {
   showNote: true,
   deepSearch: false,
   deepSearchPages: 5,
+  aiMode: 'standard',
+  aiProvider: '',
+  aiModel: '',
+  aiReasoningEffort: '',
+  aiWorkspace: 'E:\\dsh-ai-workspace',
+  tagFilterMode: 'or',
 }
 
 const STORAGE_KEY = 'dsh-archive-viewer:settings:v1'
@@ -51,6 +72,7 @@ const LANG_PREFS: readonly LangPref[] = ['auto', 'zh', 'en']
 const SORT_KEYS: readonly SortKey[] = ['updatedAt', 'title', 'sessionId']
 const SORT_DIRS: readonly SortDir[] = ['asc', 'desc']
 const LAYOUTS: readonly LayoutKind[] = ['list', 'grid']
+const TAG_FILTER_MODES: readonly TagFilterMode[] = ['and', 'or']
 
 let cached: ArchiveSettings | null = null
 
@@ -76,6 +98,18 @@ export function loadSettings(): ArchiveSettings {
       if (typeof parsed.deepSearch === 'boolean') merged.deepSearch = parsed.deepSearch
       if (typeof parsed.deepSearchPages === 'number' && Number.isFinite(parsed.deepSearchPages)) {
         merged.deepSearchPages = Math.min(20, Math.max(1, Math.round(parsed.deepSearchPages)))
+      }
+      if (typeof parsed.aiMode === 'string' && parsed.aiMode.trim() !== '') {
+        merged.aiMode = parsed.aiMode.trim()
+      }
+      if (typeof parsed.aiProvider === 'string') merged.aiProvider = parsed.aiProvider.trim()
+      if (typeof parsed.aiModel === 'string') merged.aiModel = parsed.aiModel.trim()
+      if (typeof parsed.aiReasoningEffort === 'string') merged.aiReasoningEffort = parsed.aiReasoningEffort.trim()
+      if (typeof parsed.aiWorkspace === 'string' && parsed.aiWorkspace.trim() !== '') {
+        merged.aiWorkspace = parsed.aiWorkspace.trim()
+      }
+      if (TAG_FILTER_MODES.includes(parsed.tagFilterMode ?? 'or')) {
+        merged.tagFilterMode = parsed.tagFilterMode!
       }
     }
   } catch {
