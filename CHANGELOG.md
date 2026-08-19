@@ -24,6 +24,7 @@ never overwritten. Semantic versioning.
 ### 修复（Fixed）
 
 - 取消「Agent 检索」筛选时，隐藏标签现在会乐观清除并暂停周期刷新，避免旧标签回灌导致筛选没有及时关闭
+- 修复 `ctx.effect` 未返回组合 disposer 导致部分路由注册后立即被注销的问题
 
 ### 变更（Changed）
 
@@ -47,6 +48,7 @@ never overwritten. Semantic versioning.
 ### Fixed (English)
 
 - Unchecking "Agent search" now optimistically clears hidden tags and pauses periodic refresh, preventing stale tags from re-enabling the filter
+- Fixed `ctx.effect` not returning a combined disposer, which caused some routes to be disposed immediately after registration
 
 ### Changed (English)
 
