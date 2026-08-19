@@ -412,7 +412,9 @@ export function apply(ctx: HostContext): void {
   })
 
   if (ctx.effect !== undefined) {
-    ctx.effect(() => {
+    // cordis 的 effect 会立即执行回调并把返回值当作销毁函数；这里必须返回
+    // 一个组合 disposer，而不是直接调用三个 disposer（否则路由注册后立刻被注销）。
+    ctx.effect(() => () => {
       disposer()
       helperDisposer()
       deleteDisposer()
