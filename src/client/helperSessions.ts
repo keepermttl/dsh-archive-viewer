@@ -131,25 +131,5 @@ export async function deleteHelperSessionOnHost(id: SessionId): Promise<void> {
 
 /** 把 AI 助手会话归档（从侧边栏分组中隐藏，但保留日志以便继续对话）。 */
 export async function archiveHelperSession(id: SessionId): Promise<void> {
-  const origin = globalThis.location?.origin
-  const response = await fetch(
-    new URL('/api/workspace.archiveSession', origin !== undefined && origin !== 'null' ? origin : 'http://dsh.internal'),
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        type: 'client-request',
-        rpcId: crypto.randomUUID(),
-        method: 'workspace.archiveSession',
-        payload: { sessionId: id },
-      }),
-    },
-  )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const envelope = (await response.json()) as {
-    result?: { ok?: boolean; error?: { message?: string } }
-  }
-  if (envelope.result?.ok !== true) {
-    throw new Error(envelope.result?.error?.message ?? '')
-  }
+  await postHelperApi('/api/archive-viewer/archive', { sessionId: id })
 }

@@ -2,11 +2,11 @@
  * ArchivePanelView — 已归档会话查看面板（渲染在 sidebar.footer.action 注册项的
  * fixed 层叠内，样式全部走 --dsw-alias-* 令牌以跟随皮肤）。
  *
- * 数据源（全部只读，均为 client runtime 的实时 store）：
+ * 数据源（全部只读，均为 client runtime 的实时 store + 插件宿主路由）：
  *  - stores.workspaces：注册表全局归档集合 archivedSessionIds + 工作区视图
  *  - stores.sessions：全部会话行（归档不删除日志，会话仍留在 session.list）
- *  - stores.connection.api.sessions.history：按页读取会话事件（冷会话走
- *    持久化检查，无需激活 Agent）
+ *  - stores.dsh.historyPage：宿主半区读会话日志并归一化后的分页（冷会话可直接读，
+ *    不激活 Agent；见 dshApi.ts 与 src/index.ts 的 /api/archive-viewer/history）
  *  - GET /api/session.export：宿主侧 ZIP 导出（与官方"下载会话日志"同一端点）
  *
  * 交互能力（v0.2）：
@@ -19,8 +19,9 @@
  */
 import { useCallback, useEffect, useMemo, useRef, useState, useSyncExternalStore } from 'react'
 import type {
-  ArchiveStores, ConnectionHandle, HistoryEntry, SessionEvent, SessionId,
+  ArchiveStores, HistoryEntry, SessionEvent, SessionId,
 } from './types.ts'
+import type { DshApi } from './dshApi.ts'
 import { makeT, resolveLang, type TFunc } from './i18n.ts'
 import { useSettings, type TagFilterMode } from './settings.ts'
 import { SettingsPanel } from './SettingsPanel.tsx'
@@ -33,6 +34,9 @@ const PAGE_SIZE = 20
 
 /** 侧边栏行内只渲染这两类事件（其余如 turn/start、tool/call 等跳过）。 */
 const CHAT_TYPES = new Set(['user/message', 'assistant/message'])
+
+/** 内容搜索的并发上限（宿主侧每次读一段完整日志，并发过高会让 GUI 卡顿）。 */
+const SCAN_CONCURRENCY = 4
 
 /* ── 工具栏图标（与 shell 16px 导航图标观感一致） ── */
 const SEARCH_ICON = `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" aria-hidden="true"><circle cx="7" cy="7" r="4.5"/><path d="M10.5 10.5 14 14"/></svg>`
@@ -103,30 +107,9 @@ async function downloadLogZip(sessionId: string): Promise<void> {
   anchor.click()
 }
 
-/** 触发宿主取消归档（workspace.unarchiveSession RPC，RPC 信封与官方客户端一致）。 */
-async function unarchiveSessionRpc(sessionId: string): Promise<void> {
-  const origin = globalThis.location?.origin
-  const response = await fetch(
-    new URL('/api/workspace.unarchiveSession', origin !== undefined && origin !== 'null' ? origin : 'http://dsh.internal'),
-    {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({
-        type: 'client-request',
-        rpcId: crypto.randomUUID(),
-        method: 'workspace.unarchiveSession',
-        payload: { sessionId },
-      }),
-    },
-  )
-  if (!response.ok) throw new Error(`HTTP ${response.status}`)
-  const envelope = (await response.json()) as {
-    result?: { ok?: boolean; error?: { message?: string } }
-  }
-  if (envelope.result?.ok !== true) {
-    // 无 message 时抛出空消息，由调用方用当前语言的「未知错误」兜底。
-    throw new Error(envelope.result?.error?.message ?? '')
-  }
+/** 触发宿主取消归档（插件宿主路由 /api/archive-viewer/unarchive）。 */
+async function unarchiveSessionRpc(sessionId: string, dsh: DshApi): Promise<void> {
+  await dsh.unarchive(sessionId)
 }
 
 /** 复制会话 id（剪贴板 API + 兜底 execCommand）。 */
@@ -152,7 +135,7 @@ async function copySessionId(id: string): Promise<void> {
 
 /** 一行会话的对话日志加载器（尾部一页 + 向前翻页）。 */
 function useSessionLog(
-  connection: ConnectionHandle | undefined,
+  dsh: DshApi,
   sessionId: SessionId,
   enabled: boolean,
   t: TFunc,
@@ -169,30 +152,17 @@ function useSessionLog(
   const [error, setError] = useState<string | null>(null)
 
   const fetchPage = useCallback(async (beforeSeq: number | undefined): Promise<{ events: HistoryEntry[]; hasMore: boolean } | null> => {
-    if (connection === undefined) {
-      setError(t('connUnavailable'))
-      return null
-    }
     try {
-      const response = await connection.api.sessions.history({
+      return await dsh.historyPage({
         sessionId,
         ...(beforeSeq === undefined ? {} : { beforeSeq }),
         maxMessages: PAGE_SIZE,
       })
-      // RPC 响应的 ok/value/error 都挂在 result 层（rpcId + result 信封）。
-      if (!response.result.ok) {
-        setError(t('readFailed', { msg: response.result.error?.message ?? t('unknownError') }))
-        return null
-      }
-      return {
-        events: response.result.value?.events ?? [],
-        hasMore: response.result.value?.hasMore ?? false,
-      }
     } catch (cause) {
       setError(t('readFailed', { msg: cause instanceof Error ? cause.message : String(cause) }))
       return null
     }
-  }, [connection, sessionId, t])
+  }, [dsh, sessionId, t])
 
   // 首次展开时加载尾部一页。
   useEffect(() => {
@@ -225,39 +195,22 @@ function useSessionLog(
   return { events, hasMore, loading, error, loadOlder }
 }
 
-/** 从尾部向前扫描一段会话的对话，返回关键词命中条数（读失败按 0 计）。 */
+/** 扫描一段会话的对话，返回关键词命中条数（宿主侧一次读日志并计数；失败按 0 计）。 */
 async function scanSessionContent(
-  connection: ConnectionHandle,
+  dsh: DshApi,
   sessionId: SessionId,
   keyword: string,
   maxPages: number,
 ): Promise<number> {
-  let matches = 0
-  let beforeSeq: number | undefined
-  for (let page = 0; page < maxPages; page += 1) {
-    try {
-      const response = await connection.api.sessions.history({
-        sessionId,
-        ...(beforeSeq === undefined ? {} : { beforeSeq }),
-        maxMessages: PAGE_SIZE,
-      })
-      if (!response.result.ok) break
-      const events = response.result.value?.events ?? []
-      if (events.length === 0) break
-      for (const entry of events) {
-        const event = entry.event
-        if (!CHAT_TYPES.has(event.type)) continue
-        if (textOf(event).toLowerCase().includes(keyword)) matches += 1
-      }
-      if (!(response.result.value?.hasMore ?? false)) break
-      const first = events[0]?.event
-      if (first === undefined) break
-      beforeSeq = first.seq
-    } catch {
-      break
-    }
+  try {
+    return await dsh.contentMatches({
+      sessionId,
+      keyword,
+      maxMessages: Math.max(1, maxPages) * PAGE_SIZE,
+    })
+  } catch {
+    return 0
   }
-  return matches
 }
 
 interface ContentSearchState {
@@ -269,16 +222,17 @@ interface ContentSearchState {
   done: number
   /** 待扫描会话总数。 */
   total: number
-  /** connection 不可用（深度搜索不可执行）。 */
+  /** 宿主日志读取不可用（深度搜索不可执行）。 */
   unavailable: boolean
 }
 
 /**
- * 对话内容搜索：开启时按会话逐个从尾部向前扫描（最多 maxPages 页），
- * 命中结果逐条增量发布；关键词变化/扫描页数变化会作废缓存并重新扫描。
+ * 对话内容搜索：开启时按会话逐个向宿主请求命中条数（宿主一次读日志并计数，
+ * 扫描深度由 maxPages 折算成消息窗口），命中结果逐条增量发布；
+ * 关键词 / 扫描页数变化会作废缓存并重新扫描。
  */
 function useContentSearch(
-  connection: ConnectionHandle | undefined,
+  dsh: DshApi,
   sessionIds: readonly SessionId[],
   keyword: string,
   enabled: boolean,
@@ -311,13 +265,6 @@ function useContentSearch(
       setUnavailable(false)
       return
     }
-    if (connection === undefined) {
-      setMatches(new Map())
-      setScanning(false)
-      setProgress({ done: 0, total: 0 })
-      setUnavailable(true)
-      return
-    }
     const todo = sessionIds.filter((id) => !cacheRef.current.has(id))
     if (todo.length === 0) {
       setMatches(new Map(cacheRef.current))
@@ -329,26 +276,34 @@ function useContentSearch(
     setScanning(true)
     setProgress({ done: 0, total: todo.length })
     void (async () => {
+      // 宿主一次读一段会话的完整日志（含解压与重放校验），单会话成本不低；
+      // 用有限并发（4）并行请求，命中结果仍然逐条增量发布。
+      const queue = [...todo]
       let done = 0
-      for (const id of todo) {
-        if (tokenRef.current !== token) return
-        const count = await scanSessionContent(connection, id, kw, maxPages)
-        if (tokenRef.current !== token) return
-        cacheRef.current.set(id, count)
-        done += 1
-        setMatches(new Map(cacheRef.current))
-        setProgress({ done, total: todo.length })
+      const worker = async (): Promise<void> => {
+        while (queue.length > 0) {
+          if (tokenRef.current !== token) return
+          const id = queue.shift()
+          if (id === undefined) return
+          const count = await scanSessionContent(dsh, id, kw, maxPages)
+          if (tokenRef.current !== token) return
+          cacheRef.current.set(id, count)
+          done += 1
+          setMatches(new Map(cacheRef.current))
+          setProgress({ done, total: todo.length })
+        }
       }
+      await Promise.all(Array.from({ length: Math.min(SCAN_CONCURRENCY, queue.length) }, worker))
       if (tokenRef.current === token) setScanning(false)
     })()
-  }, [connection, sessionIds, keyword, enabled, maxPages])
+  }, [dsh, sessionIds, keyword, enabled, maxPages])
 
   return { matches, scanning, done: progress.done, total: progress.total, unavailable }
 }
 
 /** 一行归档会话。 */
 function ArchiveRow(props: {
-  connection: ConnectionHandle | undefined
+  dsh: DshApi
   sessionId: SessionId
   title: string
   meta: string
@@ -362,12 +317,12 @@ function ArchiveRow(props: {
   onRemoveTag(sessionId: SessionId, tag: string): Promise<void>
   t: TFunc
 }): JSX.Element {
-  const { connection, sessionId, title, meta, workspace, open, tags, onToggleOpen, onNotice, onUnarchive, onAddTag, onRemoveTag, t } = props
+  const { dsh, sessionId, title, meta, workspace, open, tags, onToggleOpen, onNotice, onUnarchive, onAddTag, onRemoveTag, t } = props
   const [busyAction, setBusyAction] = useState<string | null>(null)
   const [tagEditorOpen, setTagEditorOpen] = useState(false)
   const [tagInput, setTagInput] = useState('')
   const [tagBusy, setTagBusy] = useState(false)
-  const log = useSessionLog(connection, sessionId, open, t)
+  const log = useSessionLog(dsh, sessionId, open, t)
 
   const runAction = useCallback(async (kind: 'download' | 'copy' | 'unarchive') => {
     setBusyAction(kind)
@@ -597,9 +552,13 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
     return () => { window.clearTimeout(handle) }
   }, [query])
 
-  const sessionIds = useMemo(() => baseRows.map(row => row.id), [baseRows])
+  // 内容搜索按最近活跃倒序推进：先扫最新的会话，命中更早出现（列表本身另行排序）。
+  const sessionIds = useMemo(
+    () => [...baseRows].sort((a, b) => b.updatedAt - a.updatedAt).map(row => row.id),
+    [baseRows],
+  )
   const contentSearch = useContentSearch(
-    stores.connection,
+    stores.dsh,
     sessionIds,
     effectiveQuery,
     settings.deepSearch,
@@ -657,13 +616,13 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
     })
   }, [])
 
-  // 取消归档：RPC 成功后 host/archived-sessions-changed 帧会实时更新归档集合，
-  // 该行随之从本面板消失并回到原工作区分组；面板级横幅提示结果。
+  // 取消归档：宿主写入 registry 归档集合 → domain/changed → workspace feed 帧
+  // 实时更新归档集合，该行随之从本面板消失并回到原工作区分组；面板级横幅提示结果。
   const [banner, setBanner] = useState<{ text: string; kind?: 'error' } | null>(null)
   const bannerTimer = useRef<number | undefined>(undefined)
   const onUnarchive = useCallback(async (sessionId: string) => {
     try {
-      await unarchiveSessionRpc(sessionId)
+      await unarchiveSessionRpc(sessionId, stores.dsh)
       setBanner({ text: t('restored') })
     } catch (cause) {
       const msg = cause instanceof Error && cause.message !== '' ? cause.message : t('unknownError')
@@ -925,7 +884,7 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
           update={updateSettings}
           reset={resetSettings}
           t={t}
-          connection={stores.connection}
+          dsh={stores.dsh}
           onClose={() => { setSettingsOpen(false) }}
         />
       )}
@@ -968,7 +927,7 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
             return (
               <div key={row.id} data-expanded={open || undefined}>
                 <ArchiveRow
-                  connection={stores.connection}
+                  dsh={stores.dsh}
                   sessionId={row.id}
                   title={row.title}
                   meta={meta}
@@ -994,7 +953,7 @@ export function ArchivePanelView(props: { stores: ArchiveStores; onClose(): void
       </div>
 
       <AiHelper
-        connection={stores.connection}
+        dsh={stores.dsh}
         settings={settings}
         t={t}
         sessionState={sessionState}

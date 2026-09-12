@@ -8,7 +8,8 @@
 import { useEffect, useState } from 'react'
 import type { TFunc } from './i18n.ts'
 import type { ArchiveSettings, LayoutKind, SettingsUpdate, SortDir, SortKey } from './settings.ts'
-import type { ConnectionHandle, ModelProviderGroup } from './types.ts'
+import type { ModelProviderGroup } from './types.ts'
+import type { DshApi } from './dshApi.ts'
 
 /** 开关控件（data-active 高亮）。 */
 function Toggle(props: {
@@ -39,10 +40,10 @@ export function SettingsPanel(props: {
   update: SettingsUpdate
   reset(): void
   t: TFunc
-  connection?: ConnectionHandle
+  dsh: DshApi
   onClose(): void
 }): JSX.Element {
-  const { settings, update, reset, t, connection, onClose } = props
+  const { settings, update, reset, t, dsh, onClose } = props
 
   const [presets, setPresets] = useState<{ id: string; name?: string }[]>([])
   const [presetsLoaded, setPresetsLoaded] = useState(false)
@@ -51,36 +52,22 @@ export function SettingsPanel(props: {
 
   useEffect(() => {
     let cancelled = false
-    const api = connection?.api.agentPresets
-    if (api === undefined) {
+    void dsh.agentPresets().then((rows) => {
+      if (cancelled) return
+      setPresets(rows.map(preset => ({ id: preset.id, name: preset.name })))
       setPresetsLoaded(true)
-    } else {
-      void api.list({}).then((response) => {
-        if (cancelled) return
-        if (response.result.ok) {
-          setPresets(response.result.value?.presets.map(preset => ({ id: preset.id, name: preset.name })) ?? [])
-        }
-        setPresetsLoaded(true)
-      }).catch(() => {
-        if (!cancelled) setPresetsLoaded(true)
-      })
-    }
-    const llm = connection?.api.llm
-    if (llm === undefined) {
+    }).catch(() => {
+      if (!cancelled) setPresetsLoaded(true)
+    })
+    void dsh.modelCatalog().then((catalog) => {
+      if (cancelled) return
+      setModelGroups([...(catalog.groups ?? [])])
       setModelCatalogLoaded(true)
-    } else {
-      void llm.models({}).then((response) => {
-        if (cancelled) return
-        if (response.result.ok) {
-          setModelGroups(response.result.value?.groups ?? [])
-        }
-        setModelCatalogLoaded(true)
-      }).catch(() => {
-        if (!cancelled) setModelCatalogLoaded(true)
-      })
-    }
+    }).catch(() => {
+      if (!cancelled) setModelCatalogLoaded(true)
+    })
     return () => { cancelled = true }
-  }, [connection])
+  }, [dsh])
 
   const setSortKey = (value: SortKey): void => { update({ sortKey: value }) }
   const setSortDir = (value: SortDir): void => { update({ sortDir: value }) }

@@ -6,6 +6,72 @@
 Version history of this project. Each release is its own section — history is
 never overwritten. Semantic versioning.
 
+## [3.1.0] — 2026-09-12
+
+适配 DSH **0.1.2-rc.1**：客户端/宿主 API 重构后旧接线全部失效，本版重接全部数据通道，
+并且**不再需要 DSH 核心补丁**。
+
+### 修复（Fixed）
+
+- **「查看对话」失效**：旧版客户端依赖 `connection.api.sessions.history`；当前 DSH 的
+  `connection` 服务已没有 `api` 命名空间（报 `Cannot read properties of undefined (reading 'sessions')`）。
+  改由插件宿主半区读日志：`sessionPersistence.readRaw`（原始 JSONL，逐行解析、不做整段重放）
+  快路径 + `sessionQuery.readSession` 回退；几 MB 的日志从 ~20s 降到亚秒级，并对正在写入的
+  活跃会话加读取超时（避免 jsonl 后端的「读期间被追加 → 重试」把界面卡死）
+- **「恢复会话」404**：旧版 POST `/api/workspace.unarchiveSession`（点号路径 + 核心补丁 RPC）。
+  当前 DSH 的 unary RPC 路径是 `/api/<namespace>/<method>`，且官方注册表仍只有单向
+  `archiveSession`。改由插件宿主路由 `/api/archive-viewer/unarchive` 写注册表归档集合
+  （优先调用注册表自身 `unarchiveSession`；否则读回其状态对象、只改 `archivedSessionIds`
+  并用其提交路径 `setState` 落盘），写入触发 `domain/changed` → workspace feed → 所有
+  客户端实时更新归档集合
+- **AI 助手整条链路失效**：`session.create/prompt/models/selectModel`、`agentPresets.list`、
+  `llm.models` 全部换新接线——优先官方客户端命名空间服务（`ctx.get('remote.session')` /
+  `remote.agentPresets`），缺失时回退新线协议
+  `POST /api/<namespace>/<method>` + `{type:'client-request',rpcId,method,payload:{args}}`，
+  并在 `gateway/arguments-invalid` 报出 `missing "X"` 时按提示改名重试一次（例如
+  `session/list` 的参数 wire 名是 `_request`）
+- **AI 助手回复解析**：新 DSH 的 `assistant/message` 事件把消息放在 `data.message.content[]`
+  （旧版是 `data.content[]`），归一化放进宿主半区，一处适配即可
+- **helper 会话归档失效**：旧 `/api/workspace.archiveSession` → 插件宿主路由
+  `/api/archive-viewer/archive`（`workspaceRegistry.archiveSession`）
+- **「关闭 dsh」依赖注入过重**：`inject: ['webServer','appExit']` 会让缺少 `appExit` 的宿主
+  整个插件停摆；改为只 inject `webServer`，`appExit` 用 `ctx.get` 惰性读取（缺失只让按钮报错）
+
+### 变更（Changed）
+
+- 新增宿主半区路由（均限本机同源）：`/api/archive-viewer/history`、`/content-search`、
+  `/unarchive`、`/archive`
+- 内容检索改为宿主侧一次读日志并计数（面板侧 4 路并发 + 按最近活跃排序推进），
+  260 段归档会话的完整扫描从「十几分钟级」降到约 10 秒
+- `dsh.client.inject` 从已不存在的 `@deepseek-ai/dsh-client-runtime` 更新为现存包名
+  （`dsh-client-ui-renderer` / `dsh-api-session-controller` / `dsh-api-workspace-controller` /
+  `dsh-client-connection`）；客户端 `inject` 收敛为 `['slots','sessions','workspaces']`
+- 宿主半区对未声明服务统一走 `ctx.get`（cordis 未 inject 的属性访问会抛
+  `cannot get property "..." without inject`）
+- `patches/0001-*.patch` 保留作历史记录，**不再需要应用**
+
+### 验证（Verified）
+
+在 DSH 0.1.2-rc.1 源码检出 + 运行中的 Web GUI 上逐项实测：面板列出 260 段归档会话、
+展开读取对话、内容检索进度与命中、恢复会话（归档集合 260→259 且实时回到侧边栏分组）、
+归档↔取消归档往返（260→259→260，磁盘状态一致）、AI 助手建会话/投递/回复/自动归档、
+设置面板 preset 与模型目录、helper 会话删除（会话目录、登记、归档集合全部还原）。
+
+### Added (English)
+
+- Adapted to DSH **0.1.2-rc.1**; every data channel rewired, and the **DSH core patch is no
+  longer required**
+- New host-half routes: `/api/archive-viewer/history` (paged log, backed by
+  `sessionPersistence.readRaw` raw JSONL with a `sessionQuery.readSession` fallback — multi-MB
+  logs went from ~20s to sub-second), `/content-search`, `/unarchive`, `/archive`
+- Unarchive now writes the registry archive set through the registry's own commit path and
+  triggers `domain/changed`, so every client updates live
+- AI helper uses the current official unary RPC wiring (client namespace services first, wire
+  fallback with `missing "X"` argument-name self-healing) and normalizes the new
+  `assistant/message` shape (`data.message.content[]`) on the host half
+- Legacy index removed from `inject`; undeclared host services are read through `ctx.get`;
+  `/api/host.shutdown` keeps working when `appExit` is absent
+
 ## [3.0.0-test] — 2026-08-16
 
 ### 新增（Added）

@@ -2,10 +2,11 @@
  * Local structural types for the surfaces this plugin consumes.
  *
  * 刻意不 import 任何 @deepseek-ai/* 类型：本插件面向运行中的 DSH host
- * （0.1.0-rc.x checkout），npm SDK 版本落后且缺少 archivedSessionIds 等
+ * （0.1.2-rc.x checkout），npm SDK 版本落后且缺少 archivedSessionIds 等
  * 新字段；结构类型与 wire 形状逐字一致，构建时零框架依赖。
- * 形状来源：packages/client/runtime/src/client/{sessions,workspaces}/service.ts
- * 与 packages/host/apiproxy/src/api/{sessions,workspace}.ts。
+ * 形状来源：packages/api/session-controller/src/{types.ts,client/sessions/service.ts}、
+ * packages/api/workspace-controller/src/client/model.ts、
+ * packages/client/ui-slots（槽位注册选项）。
  */
 
 /** Opaque session id（wire 上是 branded string，这里按字符串使用）。 */
@@ -71,7 +72,7 @@ export interface SlotsService {
   register(options: SlotRegistrationOptions, component: unknown): () => void
 }
 
-/** client runtime 服务（ClientContext 结构子集）。 */
+/** client runtime 服务（ClientContext 结构子集，当前 DSH 版本）。 */
 export interface ViewerContext {
   slots: SlotsService
   sessions: { list: SnapshotStore<SessionListState> }
@@ -89,7 +90,8 @@ export interface ViewerContext {
 export interface ArchiveStores {
   sessions: SnapshotStore<SessionListState>
   workspaces: SnapshotStore<WorkspaceListState>
-  connection: ConnectionHandle | undefined
+  /** 后端门面（插件宿主路由 + 官方 unary RPC），见 dshApi.ts。 */
+  dsh: import('./dshApi.ts').DshApi
 }
 
 /** 文本内容块（ContentBlock 结构子集）。 */
@@ -98,73 +100,56 @@ export interface TextBlock {
   text: string
 }
 
-/** 会话事件（SessionEvent 结构子集）。 */
+/**
+ * 会话事件（面板消费的归一化形状）。
+ *
+ * 宿主半区把日志事件折叠后只回传 text：新版 user/message 的事件数据是
+ * UserMessage 本体（data.content[]），assistant/message 是
+ * { turn, step, message }（data.message.content[]），旧版还有扁平的
+ * data.text —— 归一化只在这一处做，UI 不必跟着事件形状改。
+ */
 export interface SessionEvent {
   seq: number
   time: number
   type: string
   data: {
-    content?: readonly TextBlock[]
     text?: string
+    content?: readonly TextBlock[]
   }
 }
 
-/** session.history 的一行（HistoryEntry 结构子集；view 与本插件无关）。 */
+/** history 分页的一行（与旧 session.history 的 HistoryEntry 同形）。 */
 export interface HistoryEntry {
   event: SessionEvent
-  view?: unknown
 }
 
-/** session.history 的 RPC 响应（RpcResponse 结构子集：result 层承载 ok/value/error）。 */
-export interface HistoryResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: {
-      events: HistoryEntry[]
-      hasMore: boolean
-      projections?: unknown
-    }
-    error?: { code: string; message: string }
-  }
+/** 插件宿主路由 /api/archive-viewer/history 的响应。 */
+export interface ChatHistoryPage {
+  events: HistoryEntry[]
+  hasMore: boolean
+  nextBeforeSeq?: number
 }
 
-/** session.create 的 RPC 响应结构子集。 */
-export interface SessionCreateResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: { sessionId: SessionId; agentPreset?: string }
-    error?: { code: string; message: string }
-  }
+/** 官方 Remote 结果信封（ok/value 或 ok/error）。 */
+export type RemoteResult<T> =
+  | { ok: true; value: T }
+  | { ok: false; error?: { code: string; message: string } }
+
+/** 模型 id 与推理强度（ModelSelection 结构子集）。 */
+export interface ModelSelection {
+  provider: string
+  model: string
+  reasoningEffort?: string
 }
 
-/** session.prompt 的 RPC 响应结构子集。 */
-export interface SessionPromptResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: { accepted: true; command?: { kind: string; text?: string } }
-    error?: { code: string; message: string }
-  }
-}
-
-/** agentPreset.list 的 RPC 响应结构子集。 */
-export interface AgentPresetListResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: {
-      presets: {
-        id: string
-        name?: string
-        description?: string
-        isDefault?: boolean
-        trust?: string
-      }[]
-    }
-    error?: { code: string; message: string }
-  }
+/** agent preset 一行（AgentPresetRow 结构子集）。 */
+export interface AgentPresetRow {
+  id: string
+  name?: string
+  description?: string
+  isDefault?: boolean
+  trust?: string
+  broken?: string
 }
 
 /** 归档会话标签映射（sessionId → 标签列表）。 */
@@ -195,76 +180,11 @@ export interface ModelProviderGroup {
   models: ModelCatalogModel[]
 }
 
-/** llm.models 的 RPC 响应结构子集。 */
-export interface LlmModelsResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: {
-      groups: ModelProviderGroup[]
-      failures?: unknown[]
-    }
-    error?: { code: string; message: string }
-  }
+/** session/modelCatalog 的返回值（ModelCatalog 结构子集）。 */
+export interface ModelCatalog {
+  default?: ModelSelection
+  routableProviders?: readonly string[]
+  groups: readonly ModelProviderGroup[]
+  failures?: readonly { id: string; name: string; message: string }[]
 }
 
-/** session.models 的 RPC 响应结构子集。 */
-export interface SessionModelsResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: {
-      current?: { provider: string; model: string; reasoningEffort?: string }
-      routable?: boolean
-      groups?: ModelProviderGroup[]
-      failures?: unknown[]
-    }
-    error?: { code: string; message: string }
-  }
-}
-
-/** session.selectModel 的 RPC 响应结构子集。 */
-export interface SessionSelectModelResponse {
-  rpcId: string
-  result: {
-    ok: boolean
-    value?: {
-      selected: { provider: string; model: string; reasoningEffort?: string }
-    }
-    error?: { code: string; message: string }
-  }
-}
-
-/** connection 服务句柄（ConnectionHandle 结构子集）。 */
-export interface ConnectionHandle {
-  api: {
-    sessions: {
-      create(payload: {
-        workspaceId?: string
-        cwd?: string
-        sessionId?: SessionId
-        agentPreset?: string
-      }): Promise<SessionCreateResponse>
-      history(payload: { sessionId: SessionId; beforeSeq?: number; maxMessages?: number }): Promise<HistoryResponse>
-      prompt(payload: {
-        sessionId: SessionId
-        mode: 'queue' | 'steer'
-        content: { type: 'text'; text: string }[]
-        clientTimeZone?: string
-      }): Promise<SessionPromptResponse>
-      models(payload: { sessionId: SessionId }): Promise<SessionModelsResponse>
-      selectModel(payload: {
-        sessionId: SessionId
-        provider: string
-        model: string
-        reasoningEffort?: string
-      }): Promise<SessionSelectModelResponse>
-    }
-    agentPresets?: {
-      list(payload?: {}): Promise<AgentPresetListResponse>
-    }
-    llm?: {
-      models(payload?: {}): Promise<LlmModelsResponse>
-    }
-  }
-}

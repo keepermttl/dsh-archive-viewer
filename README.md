@@ -2,7 +2,7 @@
 
 DeepSeek Harness（DSH）Web GUI 的归档会话管理插件：**查看 / 恢复已归档会话**，外加右上角**一键关闭 dsh**。
 
-> 当前版本：**3.0.0-test（测试版）**
+> 当前版本：**3.1.0**（适配 DSH 0.1.2-rc.x，**不再需要 DSH 核心补丁**）
 
 English: [README.en.md](README.en.md) · 更新日志: [CHANGELOG.md](CHANGELOG.md)
 
@@ -20,29 +20,27 @@ English: [README.en.md](README.en.md) · 更新日志: [CHANGELOG.md](CHANGELOG.
 - **可关闭的介绍文本**：面板顶部说明可一键关闭，可在设置中重新开启
 - **设置界面**（面板右上角齿轮）：语言、排序、排列、内容搜索、AI 模式、AI 模型与思考强度、AI 工作区、标签筛选模式、介绍文本显隐，全部即时持久化；「恢复默认」一键还原
 - **中英双语**：跟随浏览器语言自动切换（设置里可手动覆盖为中文或 English）
-- **查看对话**：直接读取归档会话的日志（`session.history`，冷会话走持久化检查，无需激活 Agent），支持分页加载更早
+- **查看对话**：宿主半区直读会话日志（`sessionPersistence.readRaw`，逐行解析、不做整段重放），分页加载更早；冷/热会话都可读，不激活 Agent，几 MB 的日志也在亚秒级返回
 - **下载日志 ZIP**：官方 `session.export` 端点
-- **恢复会话（取消归档）**：一键把会话放回原工作区分组，位置原样保留
+- **恢复会话（取消归档）**：一键把会话放回原工作区分组，位置原样保留（由本插件宿主半区写入注册表归档集合，无需官方 RPC）
 - **右上角「关闭 dsh」按钮**：确认后优雅关机（等价于在启动终端按 Ctrl+C，5 秒宽限正确收尾）
 - **皮肤全适配**：全部使用 shell 设计令牌（`--dsw-alias-*`），自动跟随任意皮肤（含半透明/深色侧边栏类皮肤）；面板 Portal 到 `document.body`，避开皮肤侧边栏作用域的令牌覆盖
 
-## 依赖：DSH 核心补丁（必读）
+## 兼容性：适配当前 DSH（0.1.2-rc.x）
 
-「恢复会话」与「关闭 dsh」依赖 DSH 核心新增的两个 RPC（截至 2026-08 官方尚未包含）：
+DSH 客户端/宿主 API 在 0.1.2 一轮重构后与 0.1.0-rc.x 完全不同，本版本按新版接线：
 
-- `workspace.unarchiveSession` —— 注册表级取消归档
-- `host.shutdown` —— 经 CLI 启动器的 `appExit` 触发优雅关机
+| 能力 | 旧版接线（已失效） | 当前接线 |
+| --- | --- | --- |
+| 读会话日志 | 客户端 `connection.api.sessions.history` RPC | 宿主半区 `/api/archive-viewer/history`（`sessionPersistence.readRaw` 原始 JSONL 快路径，回退 `sessionQuery.readSession`） |
+| 内容检索 | 客户端逐页 RPC 扫描 | 宿主半区 `/api/archive-viewer/content-search`（一次读日志 + 计数） |
+| 取消归档 | 核心补丁新增的 `workspace.unarchiveSession` RPC | 宿主半区 `/api/archive-viewer/unarchive`（写注册表归档集合并触发 `domain/changed`，UI 实时更新） |
+| 归档（隐藏 AI 助手会话） | `workspace.archiveSession` RPC（点号路径） | 宿主半区 `/api/archive-viewer/archive`（`workspaceRegistry.archiveSession`） |
+| AI 助手建会话/投递/选模型/模型目录/preset 列表 | `connection.api.*` | 官方 unary RPC：优先客户端命名空间服务 `ctx.get('remote.session')` / `remote.agentPresets`，缺失时回退线协议 `POST /api/<namespace>/<method>`，信封 `{type:'client-request',rpcId,method,payload:{args}}` |
+| 关闭 dsh | 经核心补丁的 `host.shutdown` RPC | 宿主半区 `/api/host.shutdown` + launcher 的 `appExit` 宿主值（缺失时只报错，不让插件停摆） |
+| 客户端服务依赖 | `inject: ['slots','sessions','workspaces','connection']` | `inject: ['slots','sessions','workspaces']`（`dsh.client.inject` 同步更新为现存包名） |
 
-使用前请先应用补丁：
-
-```sh
-cd <你的 deepseek-harness 检出目录>
-git apply /path/to/dsh-archive-viewer/patches/0001-workspace-unarchive-and-host-shutdown-rpcs.patch
-```
-
-然后**重启 dsh web**（源码运行时 tsx 直接执行，无需构建；发布包安装的用户需重新构建受影响包）。补丁共 8 个文件：workspace 注册表、apiproxy 接口/校验/路由/实现、host schema 等。
-
-> 若 DSH 官方后续合入这两个 RPC（`workspace.ts` 注释里的 "a future unarchive" 正是本补丁实现的位置），补丁会变为空操作，可安全跳过。
+> 关键点：**插件不再要求改 DSH 源码**。取消归档走注册表自己的提交路径，因此升级 DSH 不会再把补丁冲掉；`patches/` 目录仅作历史留存，**无需再应用**。
 
 ## 安装
 
@@ -61,7 +59,7 @@ dsh plugin --profile web add link:E:\path\to\dsh-archive-viewer   # Windows
 
 重启 `dsh web`，浏览器 **Ctrl+F5** 硬刷新。
 
-> 从旧版本升级后，请务必**重启 `dsh web`**：本版本 host 半区新增了标签存储与 `/api/archive-viewer/tags` 本地 API，仅刷新浏览器无法加载 host 侧变更。
+> 从旧版本升级后，请务必**重启 `dsh web`**：本版本 host 半区新增了历史/检索/归档四条本地 API，仅刷新浏览器无法加载 host 侧变更。
 
 ## 使用
 
@@ -81,9 +79,20 @@ dsh plugin --profile web add link:E:\path\to\dsh-archive-viewer   # Windows
 - `POST /api/archive-viewer/tags`：增删标签，JSON 体如 `{"sessionId":"<id>","add":["标签"]}` / `{"sessionId":"<id>","remove":["标签"]}`
 - `POST /api/archive-viewer/tags`：清除隐藏检索标签，JSON 体 `{"clearHidden":true}`
 
+其余宿主半区本地 API（均只接受本机同源请求：Host 必须是环回地址，带 Origin 时必须同源）：
+
+- `POST /api/archive-viewer/history` `{sessionId,beforeSeq?,maxMessages?}` → `{ok,events,hasMore,nextBeforeSeq}`：会话日志分页（消息已归一化：`data.text`）
+- `POST /api/archive-viewer/content-search` `{sessionId,keyword,maxMessages?}` → `{ok,matches}`：单会话内容命中数
+- `POST /api/archive-viewer/unarchive` `{sessionId}` → `{ok,archivedSessionIds}`：取消归档
+- `POST /api/archive-viewer/archive` `{sessionId}` → `{ok,archivedSessionIds}`：归档
+- `POST /api/archive-viewer/helper-sessions` `{sessionId,action:'add'|'remove'}`：登记/注销 AI 助手会话
+- `POST /api/archive-viewer/session/delete` `{sessionId}`：删除已登记的 AI 助手会话（其他会话一律拒绝）
+- `POST /api/host.shutdown`（client-request 信封）：优雅关机
+
 ## 兼容性
 
-- 针对 DSH `0.1.0-rc.5` 源码检出开发验证
+- 针对 DSH **0.1.2-rc.1** 源码检出开发并逐项验证（面板列表 / 查看对话 / 内容检索 / 恢复会话 / 归档 ↔ 取消归档往返 / AI 助手建会话与回复 / 设置面板 preset 与模型目录 / 助手会话删除清理）
+- **不需要修改 DSH 源码**；`patches/` 保留的旧补丁仅作历史记录
 - 客户端零框架类型依赖：不 import 任何 `@deepseek-ai/*` 值，全部结构类型，不随 DSH SDK 版本漂移
 - 构建产物：`tsdown`（host 半区 `lib/index.js` + browser 半区 `lib/client.js`，标准 `window.__ModuleLoader__.load` 闭包工厂格式）
 
