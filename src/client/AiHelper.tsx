@@ -1,15 +1,19 @@
 /**
  * AiHelper — 归档面板底部的内嵌 AI 助手小窗口。
  *
- * 不重复实现完整聊天 UI：它通过 DSH 官方 session.create / session.prompt /
- * session.history API 驱动一个真实 DSH agent 会话（默认 standard 标准模式，
- * 可在设置中改为其他 agent preset）。agent 可以通过 host 半区提供的
- * /api/archive-viewer/tags 接口给归档会话添加/移除标签（含隐藏临时检索标签）。
+ * 不重复实现完整聊天 UI：它通过 DSH 官方会话 API 驱动一个真实 DSH agent 会话
+ * （默认 standard 标准模式，可在设置中改为其他 agent preset）：
+ *  - 新建/投递/选模型走 dshApi.ts（官方 unary RPC，命名空间服务优先）；
+ *  - 读回复走插件宿主路由 /api/archive-viewer/history（宿主读日志并归一化）；
+ *  - helper 会话的归档/删除走插件宿主路由（见 helperSessions.ts）。
+ * agent 可以通过 host 半区提供的 /api/archive-viewer/tags 接口给归档会话
+ * 添加/移除标签（含隐藏临时检索标签）。
  */
 import { useCallback, useEffect, useRef, useState, type KeyboardEvent } from 'react'
 import type { ArchiveSettings } from './settings.ts'
 import type { TFunc } from './i18n.ts'
-import type { ConnectionHandle, HistoryEntry, SessionEvent, SessionListState } from './types.ts'
+import type { HistoryEntry, SessionEvent, SessionListState } from './types.ts'
+import type { DshApi } from './dshApi.ts'
 import {
   addHelperSession,
   archiveHelperSession,
@@ -136,14 +140,14 @@ function buildInstruction(t: TFunc, rows: readonly ArchiveRowInfo[]): string {
 }
 
 export function AiHelper(props: {
-  connection: ConnectionHandle | undefined
+  dsh: DshApi
   settings: ArchiveSettings
   t: TFunc
   sessionState: SessionListState
   archiveRows: readonly ArchiveRowInfo[]
   onTagsChanged(): void
 }): JSX.Element {
-  const { connection, settings, t, sessionState, archiveRows, onTagsChanged } = props
+  const { dsh, settings, t, sessionState, archiveRows, onTagsChanged } = props
 
   const [expanded, setExpanded] = useState(true)
   const [sessionId, setSessionId] = useState<string | null>(null)
@@ -155,7 +159,7 @@ export function AiHelper(props: {
 
   const sessionIdRef = useRef<string | null>(null)
   const messagesRef = useRef<ChatMessage[]>([])
-  const connectionRef = useRef(connection)
+  const dshRef = useRef(dsh)
   const settingsRef = useRef(settings)
   const sessionStateRef = useRef(sessionState)
   const onTagsChangedRef = useRef(onTagsChanged)
@@ -163,7 +167,7 @@ export function AiHelper(props: {
   const pollCountRef = useRef(0)
 
   useEffect(() => { messagesRef.current = messages }, [messages])
-  useEffect(() => { connectionRef.current = connection }, [connection])
+  useEffect(() => { dshRef.current = dsh }, [dsh])
   useEffect(() => { settingsRef.current = settings }, [settings])
   useEffect(() => { sessionStateRef.current = sessionState }, [sessionState])
   useEffect(() => { onTagsChangedRef.current = onTagsChanged }, [onTagsChanged])
@@ -193,14 +197,9 @@ export function AiHelper(props: {
   }, [])
 
   const loadHistory = useCallback(async (id: string): Promise<HistoryEntry[]> => {
-    const conn = connectionRef.current
-    if (conn === undefined) throw new Error(t('connUnavailable'))
-    const response = await conn.api.sessions.history({ sessionId: id, maxMessages: 80 })
-    if (!response.result.ok) {
-      throw new Error(response.result.error?.message ?? t('unknownError'))
-    }
-    return response.result.value?.events ?? []
-  }, [t])
+    const page = await dshRef.current.historyPage({ sessionId: id, maxMessages: 80 })
+    return page.events
+  }, [])
 
   // 恢复上次未关闭的 AI 助手会话（仅当模式匹配时），避免每次打开面板都新建会话。
   useEffect(() => {
@@ -228,20 +227,15 @@ export function AiHelper(props: {
   }, [loadHistory, mergeHistory])
 
   const applyModelSelection = useCallback(async (id: string): Promise<void> => {
-    const conn = connectionRef.current
     const s = settingsRef.current
-    if (conn === undefined) return
     if (s.aiProvider === '' || s.aiModel === '') return
-    const response = await conn.api.sessions.selectModel({
+    await dshRef.current.selectModel({
       sessionId: id,
       provider: s.aiProvider,
       model: s.aiModel,
       ...(s.aiReasoningEffort === '' ? {} : { reasoningEffort: s.aiReasoningEffort }),
     })
-    if (!response.result.ok) {
-      throw new Error(response.result.error?.message ?? t('unknownError'))
-    }
-  }, [t])
+  }, [])
 
   const poll = useCallback(async (id: string): Promise<void> => {
     pollCountRef.current += 1
@@ -275,17 +269,10 @@ export function AiHelper(props: {
 
   const ensureSession = useCallback(async (): Promise<string> => {
     if (sessionIdRef.current !== null) return sessionIdRef.current
-    const conn = connectionRef.current
-    if (conn === undefined) throw new Error(t('connUnavailable'))
-    const response = await conn.api.sessions.create({
+    const id = await dshRef.current.createSession({
       agentPreset: settingsRef.current.aiMode,
       cwd: settingsRef.current.aiWorkspace,
     })
-    if (!response.result.ok) {
-      throw new Error(response.result.error?.message ?? t('unknownError'))
-    }
-    const id = response.result.value?.sessionId
-    if (id === undefined) throw new Error(t('unknownError'))
     sessionIdRef.current = id
     setSessionId(id)
     try {
@@ -305,16 +292,11 @@ export function AiHelper(props: {
       // 存储不可用时仅本次会话内复用
     }
     return id
-  }, [t])
+  }, [])
 
   const handleSend = useCallback(async (): Promise<void> => {
     const text = input.trim()
     if (text === '' || sending) return
-    const conn = connectionRef.current
-    if (conn === undefined) {
-      setError(t('connUnavailable'))
-      return
-    }
     setInput('')
     setError(null)
     try {
@@ -322,14 +304,7 @@ export function AiHelper(props: {
       await applyModelSelection(id)
       const instruction = seeded ? '' : buildInstruction(t, archiveRows)
       const content = instruction === '' ? text : `${instruction}${text}`
-      const response = await conn.api.sessions.prompt({
-        sessionId: id,
-        mode: 'queue',
-        content: [{ type: 'text', text: content }],
-      })
-      if (!response.result.ok) {
-        throw new Error(response.result.error?.message ?? t('unknownError'))
-      }
+      await dshRef.current.prompt({ sessionId: id, text: content, mode: 'queue' })
       setSeeded(true)
       setSending(true)
       pollCountRef.current = 0

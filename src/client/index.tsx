@@ -13,12 +13,21 @@ import { createPortal } from 'react-dom'
 import { ArchivePanelView } from './ArchivePanel.tsx'
 import { ShutdownButton } from './ShutdownButton.tsx'
 import { CSS_TEXT } from './style.ts'
+import { createDshApi } from './dshApi.ts'
 import { makeT, resolveLang } from './i18n.ts'
 import { loadSettings, useSettings } from './settings.ts'
-import type { ArchiveStores, ConnectionHandle, ViewerContext } from './types.ts'
+import type { ArchiveStores, ViewerContext } from './types.ts'
 
-/** 需要等待注入的服务（slots 由 client-runtime 提供）。 */
-export const inject = ['slots', 'sessions', 'workspaces', 'connection']
+/**
+ * 需要等待注入的服务。
+ *
+ * slots/sessions/workspaces 是当前 DSH 客户端里稳定的服务键（ui-slots、
+ * api-session-controller、api-workspace-controller 提供）。其余后端能力一律
+ * 走 dshApi.ts：插件自己的宿主路由 + 官方 unary RPC（命名空间服务优先，
+ * 缺失时线协议回退），因此不需要把 `remote.*` 命名空间写进 inject —— 少一个
+ * 服务键就少一处会让插件 fiber 停摆的版本耦合点。
+ */
+export const inject = ['slots', 'sessions', 'workspaces']
 
 /** 与 shell 16px 导航图标观感一致的归档图标。 */
 const ICON = `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M2.5 4.5h11M3.5 4.5v8a1 1 0 0 0 1 1h7a1 1 0 0 0 1-1v-8M6 4.5V3a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v1.5"/><path d="M6.5 8h3"/></svg>`
@@ -84,7 +93,7 @@ export function apply(ctx: ViewerContext): void {
   const stores: ArchiveStores = {
     sessions: ctx.sessions.list,
     workspaces: ctx.workspaces.list,
-    connection: ctx.get('connection') as ConnectionHandle | undefined,
+    dsh: createDshApi(name => ctx.get(name)),
   }
   ctx.slots.inject('sidebar.footer.action', () => ctx.slots.register({
     name: 'sidebar.footer.action',

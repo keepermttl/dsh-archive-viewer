@@ -1179,4 +1179,17 @@ export const CSS_TEXT = `
   white-space: pre-wrap;
   word-break: break-word;
 }
+
+/* ── 侧栏底栏（sidebar.footer.action）与同槽全宽插件纵向共存 ──
+ * 官方容器是横向 flex（每 occupant 一块），而本插件与 dsh-cost-meter 的
+ * 余额组都是「整行块」：横向排列会把后注册的条目挤出侧栏（溢出到内容区）。
+ * 这里把容器覆写为纵向堆叠：余额组（含周末时段行）在上，归档按钮独立一行
+ * 位于其下、设置按钮之上。
+ * 注意：.N5sqUq_footerActions 是官方 css-module 编译类名，官方改版后可能
+ * 变化 —— 失效时仅样式退化（归档回到被挤压位置），不影响功能。
+ */
+.N5sqUq_footerActions {
+  flex-direction: column;
+  align-items: stretch;
+}
 `

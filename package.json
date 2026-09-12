@@ -1,7 +1,7 @@
 {
   "name": "@dsh-external/dsh-archive-viewer",
-  "version": "3.0.0-test",
-  "description": "查看已归档会话的 DSH Web 客户端插件：关键词搜索（含对话内容）、排序与标签筛选、内嵌 AI 助手（标准模式 agent）、归档会话标签、列表/网格排列、双语界面与可配置设置；支持阅读对话日志与下载 ZIP 导出。",
+  "version": "3.1.0",
+  "description": "查看已归档会话的 DSH Web 客户端插件：关键词搜索（含对话内容）、排序与标签筛选、内嵌 AI 助手（标准模式 agent）、归档会话标签、列表/网格排列、双语界面与可配置设置；支持阅读对话日志、恢复会话与下载 ZIP 导出。适配 DSH 0.1.2-rc.x，无需核心补丁。",
   "private": true,
   "type": "module",
   "main": "lib/index.js",
@@ -23,7 +23,9 @@
     },
     "client": {
       "inject": [
-        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-renderer",
+        "@deepseek-ai/dsh-api-session-controller",
+        "@deepseek-ai/dsh-api-workspace-controller",
         "@deepseek-ai/dsh-client-connection"
       ],
       "platform": "web"
