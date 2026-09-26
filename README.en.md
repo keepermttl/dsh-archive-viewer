@@ -2,7 +2,7 @@
 
 Archived-session manager for the **DeepSeek Harness (DSH) Web GUI**: browse, read, and **restore archived sessions**, plus a one-click **shutdown button** in the header.
 
-> Current version: **3.1.0** (works with DSH 0.1.2-rc.x — **no DSH core patch required**)
+> Current version: **3.2.0** (works with DSH 0.1.7-rc.x — **no DSH core patch required**)
 
 中文说明见 [README.md](README.md) · Changelog: [CHANGELOG.md](CHANGELOG.md)
 
@@ -26,7 +26,7 @@ Archived-session manager for the **DeepSeek Harness (DSH) Web GUI**: browse, rea
 - **Shutdown button** (header, top-right): graceful host shutdown (equivalent to Ctrl+C — 5s grace teardown)
 - **Skin-adaptive**: all styling uses shell design tokens (`--dsw-alias-*`), following any skin; the panel is portaled to `document.body` to avoid sidebar-scoped token overrides
 
-## Compatibility: adapted to current DSH (0.1.2-rc.x)
+## Compatibility: adapted to current DSH (0.1.7-rc.x)
 
 DSH's client/host APIs were reworked during 0.1.2 and no longer match 0.1.0-rc.x. This release rewires the plugin:
 
@@ -34,7 +34,7 @@ DSH's client/host APIs were reworked during 0.1.2 and no longer match 0.1.0-rc.x
 | --- | --- | --- |
 | Read session log | client `connection.api.sessions.history` RPC | host route `/api/archive-viewer/history` (`sessionPersistence.readRaw` raw-JSONL fast path, falls back to `sessionQuery.readSession`) |
 | Content search | client-side page-by-page RPC scan | host route `/api/archive-viewer/content-search` (one log read per session + counting) |
-| Unarchive | `workspace.unarchiveSession` RPC from the core patch | host route `/api/archive-viewer/unarchive` (writes the registry archive set; `domain/changed` updates every client live) |
+| Unarchive | `workspace.unarchiveSession` RPC from the old core patch | host route `/api/archive-viewer/unarchive` (prefers DSH 0.1.7's official `workspaceRegistry.unarchiveSession`; older registry `setState` fallback writes the archive set and emits `domain/changed`) |
 | Archive (hide AI helper sessions) | `workspace.archiveSession` RPC (dotted path) | host route `/api/archive-viewer/archive` (`workspaceRegistry.archiveSession`) |
 | AI helper create/prompt/select-model/model catalog/preset list | `connection.api.*` | official unary RPC: client namespace services `ctx.get('remote.session')` / `remote.agentPresets` when present, otherwise the wire fallback `POST /api/<namespace>/<method>` with envelope `{type:'client-request',rpcId,method,payload:{args}}` |
 | Shutdown | `host.shutdown` RPC from the core patch | host route `/api/host.shutdown` + the launcher's `appExit` host value (a missing value reports an error instead of stalling the plugin) |
@@ -90,7 +90,7 @@ Other host-half routes (all accept loopback same-origin requests only: the Host 
 
 ## Compatibility
 
-- Developed and verified item by item against a DSH **0.1.2-rc.1** source checkout (panel list / read conversation / content search / restore / archive↔unarchive round-trip / AI helper session creation and replies / settings preset and model catalog / helper session deletion)
+- Developed against a DSH **0.1.7-rc.2** source checkout; the DSH main library build and typecheck pass, and the plugin keeps its older registry fallback for compatibility
 - **No DSH source changes required**; the legacy patch under `patches/` is kept for history only
 - Zero framework type dependencies: no `@deepseek-ai/*` value imports, structural types only — no drift with DSH SDK versions
 - Build: `tsdown` (host half `lib/index.js` + browser half `lib/client.js`, standard `window.__ModuleLoader__.load` closure-factory format)

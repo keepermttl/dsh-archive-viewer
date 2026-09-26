@@ -2,7 +2,7 @@
  * Local structural types for the surfaces this plugin consumes.
  *
  * 刻意不 import 任何 @deepseek-ai/* 类型：本插件面向运行中的 DSH host
- * （0.1.2-rc.x checkout），npm SDK 版本落后且缺少 archivedSessionIds 等
+ * （0.1.7-rc.x checkout），npm SDK 版本落后且缺少 archivedSessionIds 等
  * 新字段；结构类型与 wire 形状逐字一致，构建时零框架依赖。
  * 形状来源：packages/api/session-controller/src/{types.ts,client/sessions/service.ts}、
  * packages/api/workspace-controller/src/client/model.ts、
@@ -187,4 +187,3 @@ export interface ModelCatalog {
   groups: readonly ModelProviderGroup[]
   failures?: readonly { id: string; name: string; message: string }[]
 }
-
