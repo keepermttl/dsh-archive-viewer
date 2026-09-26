@@ -2,7 +2,7 @@
 
 DeepSeek Harness（DSH）Web GUI 的归档会话管理插件：**查看 / 恢复已归档会话**，外加右上角**一键关闭 dsh**。
 
-> 当前版本：**3.1.0**（适配 DSH 0.1.2-rc.x，**不再需要 DSH 核心补丁**）
+> 当前版本：**3.2.0**（适配 DSH 0.1.7-rc.x，**不再需要 DSH 核心补丁**）
 
 English: [README.en.md](README.en.md) · 更新日志: [CHANGELOG.md](CHANGELOG.md)
 
@@ -26,7 +26,7 @@ English: [README.en.md](README.en.md) · 更新日志: [CHANGELOG.md](CHANGELOG.
 - **右上角「关闭 dsh」按钮**：确认后优雅关机（等价于在启动终端按 Ctrl+C，5 秒宽限正确收尾）
 - **皮肤全适配**：全部使用 shell 设计令牌（`--dsw-alias-*`），自动跟随任意皮肤（含半透明/深色侧边栏类皮肤）；面板 Portal 到 `document.body`，避开皮肤侧边栏作用域的令牌覆盖
 
-## 兼容性：适配当前 DSH（0.1.2-rc.x）
+## 兼容性：适配当前 DSH（0.1.7-rc.x）
 
 DSH 客户端/宿主 API 在 0.1.2 一轮重构后与 0.1.0-rc.x 完全不同，本版本按新版接线：
 
@@ -34,8 +34,8 @@ DSH 客户端/宿主 API 在 0.1.2 一轮重构后与 0.1.0-rc.x 完全不同，
 | --- | --- | --- |
 | 读会话日志 | 客户端 `connection.api.sessions.history` RPC | 宿主半区 `/api/archive-viewer/history`（`sessionPersistence.readRaw` 原始 JSONL 快路径，回退 `sessionQuery.readSession`） |
 | 内容检索 | 客户端逐页 RPC 扫描 | 宿主半区 `/api/archive-viewer/content-search`（一次读日志 + 计数） |
-| 取消归档 | 核心补丁新增的 `workspace.unarchiveSession` RPC | 宿主半区 `/api/archive-viewer/unarchive`（写注册表归档集合并触发 `domain/changed`，UI 实时更新） |
-| 归档（隐藏 AI 助手会话） | `workspace.archiveSession` RPC（点号路径） | 宿主半区 `/api/archive-viewer/archive`（`workspaceRegistry.archiveSession`） |
+| 取消归档 | 旧版核心补丁新增的 `workspace.unarchiveSession` RPC | 宿主半区 `/api/archive-viewer/unarchive`（优先调用 DSH 0.1.7 的 `workspaceRegistry.unarchiveSession`，旧版回退写注册表归档集合并触发 `domain/changed`） |
+| 归档（隐藏 AI 助手会话） | `workspace.archiveSession` RPC（点号路径） | 宿主半区 `/api/archive-viewer/archive`（调用 `workspaceRegistry.archiveSession`） |
 | AI 助手建会话/投递/选模型/模型目录/preset 列表 | `connection.api.*` | 官方 unary RPC：优先客户端命名空间服务 `ctx.get('remote.session')` / `remote.agentPresets`，缺失时回退线协议 `POST /api/<namespace>/<method>`，信封 `{type:'client-request',rpcId,method,payload:{args}}` |
 | 关闭 dsh | 经核心补丁的 `host.shutdown` RPC | 宿主半区 `/api/host.shutdown` + launcher 的 `appExit` 宿主值（缺失时只报错，不让插件停摆） |
 | 客户端服务依赖 | `inject: ['slots','sessions','workspaces','connection']` | `inject: ['slots','sessions','workspaces']`（`dsh.client.inject` 同步更新为现存包名） |
@@ -91,7 +91,7 @@ dsh plugin --profile web add link:E:\path\to\dsh-archive-viewer   # Windows
 
 ## 兼容性
 
-- 针对 DSH **0.1.2-rc.1** 源码检出开发并逐项验证（面板列表 / 查看对话 / 内容检索 / 恢复会话 / 归档 ↔ 取消归档往返 / AI 助手建会话与回复 / 设置面板 preset 与模型目录 / 助手会话删除清理）
+- 针对 DSH **0.1.7-rc.2** 源码检出开发并完成主库构建、类型检查；插件保留旧版注册表回退路径，并优先使用官方 `archiveSession` / `unarchiveSession` API
 - **不需要修改 DSH 源码**；`patches/` 保留的旧补丁仅作历史记录
 - 客户端零框架类型依赖：不 import 任何 `@deepseek-ai/*` 值，全部结构类型，不随 DSH SDK 版本漂移
 - 构建产物：`tsdown`（host 半区 `lib/index.js` + browser 半区 `lib/client.js`，标准 `window.__ModuleLoader__.load` 闭包工厂格式）
@@ -109,3 +109,4 @@ dsh plugin --profile web add link:E:\path\to\dsh-archive-viewer   # Windows
 
 - [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness)
 - 插件形态参考 [dsh-web-ui](https://github.com/zhu1090093659/dsh-web-ui)（`dsh.bundle.patch` + `dsh.client` 声明 + 槽位注册）
+

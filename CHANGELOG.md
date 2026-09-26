@@ -6,6 +6,27 @@
 Version history of this project. Each release is its own section — history is
 never overwritten. Semantic versioning.
 
+## [3.2.0] — 2026-09-26
+
+适配 DSH **0.1.7-rc.2**。
+
+### 修复（Fixed）
+
+- 修正客户端命名空间服务抛错后的线协议回退路径：现在请求完整的
+  `/api/session/<method>` 或 `/api/agentPresets/<method>` endpoint，避免错误回退到
+  不存在的 `/api/<method>`。
+
+### 变更（Changed）
+
+- 归档与取消归档优先调用 DSH 0.1.7 正式提供的
+  `workspaceRegistry.archiveSession()` / `unarchiveSession()`；旧版 `setState` 回退逻辑继续保留。
+- 更新兼容性声明、安装说明中的版本信息与构建验证基线。
+
+### Verification
+
+- `pnpm typecheck`（DSH 0.1.7-rc.2 主库）通过。
+- 插件 `pnpm typecheck`、`pnpm build` 通过。
+
 ## [3.1.0] — 2026-09-12
 
 适配 DSH **0.1.2-rc.1**：客户端/宿主 API 重构后旧接线全部失效，本版重接全部数据通道，
@@ -176,3 +197,4 @@ never overwritten. Semantic versioning.
 
 [2.0.0]: https://github.com/keepermttl/dsh-archive-viewer/releases/tag/v2.0
 [0.1.4]: https://github.com/keepermttl/dsh-archive-viewer/commit/41998c0
+

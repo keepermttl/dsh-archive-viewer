@@ -40,9 +40,9 @@ interface HostContext {
   /** 任意宿主服务读取（cordis Context#get；缺失服务返回 undefined）。 */
   get?(name: string): unknown
   /**
-   * DSH workspace 注册表。官方目前只提供 archiveSession（单向归档），
-   * 取消归档在旧版本由本插件的 core 补丁提供；新版改为运行时适配：
-   *  - 若注册表自身提供 unarchiveSession（补丁已应用/官方后续合入）→ 直接用；
+   * DSH workspace 注册表。DSH 0.1.7 已正式提供 archiveSession / unarchiveSession；
+   * 为旧版本保留运行时回退：
+   *  - 若注册表自身提供 unarchiveSession → 直接用；
    *  - 否则用注册表自己的提交路径 setState 写回归档集合（保留其状态缓存与
    *    domain/changed 事件，从而让所有客户端实时看到归档集合变化）。
    */
@@ -492,8 +492,7 @@ function registryOf(ctx: HostContext): NonNullable<HostContext['workspaceRegistr
 /**
  * 取消归档一个会话（把 id 从注册表全局归档集合移除）。
  *
- * 官方 registry 目前只有 archiveSession（单向）。优先调用注册表自己的
- * unarchiveSession（core 补丁已应用或官方后续合入时自动生效）；否则走它自己的
+ * 优先调用注册表自己的 unarchiveSession；旧版注册表没有该方法时走它自己的
  * 读-改-写路径：
  *  - 先取最新已提交状态（`global.get()`，回退 registry 缓存的状态对象），只替换
  *    `archivedSessionIds`，保留未知字段；
@@ -1017,3 +1016,4 @@ export function apply(ctx: HostContext): void {
   }
   ctx.logger.info(`[dsh-archive-viewer] host half loaded; tag store: ${filePath}`)
 }
+

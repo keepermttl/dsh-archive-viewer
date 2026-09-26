@@ -138,7 +138,7 @@ async function gatewayCall<T>(
       return (await callable.call(service, ...Object.values(args))) as RemoteResult<T>
     } catch (cause) {
       // 命名空间服务自身抛错（未挂载/参数不匹配）→ 落到线协议再试一次。
-      const fallback = await gatewayFetch<T>(method, args)
+      const fallback = await gatewayFetch<T>(`${serviceName.replace(/^remote\./, '')}/${method}`, args)
       if (fallback.ok || fallback.error?.code !== 'transport') return fallback
       return {
         ok: false,
@@ -276,3 +276,4 @@ export function createDshApi(get: (name: string) => unknown): DshApi {
     },
   }
 }
+
